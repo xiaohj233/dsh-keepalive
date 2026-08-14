@@ -65,9 +65,11 @@ Provider, model, base URL, API name, and credential-reference values are seriali
 Run the package's uninstall command **before** removing it from the profile:
 
 ```sh
-pnpm --dir ~/.dsh/profiles/web exec dsh-keepalive-uninstall
+pnpm --dir "$DSH_HOME/profiles/web" exec dsh-keepalive-uninstall
 dsh plugin --profile web remove dsh-keepalive
 ```
+
+When `$DSH_HOME` is unset the profile lives under the home directory (POSIX: `~/.dsh/profiles/web`; Windows PowerShell: `%USERPROFILE%\.dsh\profiles\web`); on Windows pass the resolved path to `pnpm --dir` instead of `~`.
 
 The command disables keepalive state, terminates only the recorded watchdog process, and restores both patched official files. It exits nonzero if any step is incomplete. Normal Web shutdown does not reverse patches because shutdown is the event the watchdog supervises.
 
