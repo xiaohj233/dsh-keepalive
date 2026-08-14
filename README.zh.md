@@ -1,5 +1,7 @@
 # dsh-keepalive（看门狗守护与自修复）
 
+[English](README.md) | 中文
+
 **状态：功能插件（含兼容补丁，Feature Plugin with Compatibility Patch）。仅在 DeepSeek Harness（深度求索 Harness）0.1.0-rc.6 上测试过。**
 
 `dsh-keepalive` 为 DSH Web 进程运行一个分离的（detached）看门狗（watchdog）。显式启用后，看门狗会在进程退出后重启 DSH。可选的修复代理（repair agent）可以检查反复出现的启动失败、修改插件工作区（workspace），并从快照（snapshot）重试。
@@ -30,7 +32,7 @@
 - `@deepseek-ai/dsh-host-apiproxy@0.1.0-rc.6`：允许在 Web 设置 API 中使用 `keepalive` 设置命名空间。
 - `@deepseek-ai/dsh-subprocess-local@0.1.0-rc.6`：在 Windows 上为本地工具子进程使用 `windowsHide: true`。
 
-版本策略默认是自适应（adaptive）的：当已安装副本的版本与 `0.1.0-rc.6` 不同，但每个锚点仍然唯一匹配时，仍会打补丁（记录为 adaptive 匹配）；锚点漂移时则以原因跳过；严格的编程模式可恢复旧的"仅精确版本"应用行为。单个漂移副本永远不会阻塞另一个目标，补丁应用在 host 或 watchdog 启动期间也绝不会抛错。还原（卸载）在所有模式下都保持严格的版本守卫。写入使用临时文件和重命名（atomic write，原子写入），替换后校验语法，校验失败时恢复之前的字节。
+版本策略默认是自适应（adaptive）的：当已安装副本的版本与 `0.1.0-rc.6` 不同，但每个锚点仍然唯一匹配时，仍会打补丁（记录为 adaptive 匹配）；锚点漂移时则以原因跳过；严格的编程模式可恢复旧的"仅精确版本"应用行为。单个漂移副本永远不会阻塞另一个目标，补丁应用在 host 或 watchdog 启动期间也绝不会抛错。设置命名空间行插入在允许列表数组的**顶部**，不会占用与 `dsh-tavily-search-provider` 共享的尾部锚点；两个插件可以任意顺序共存。还原（卸载）在所有模式下都保持严格的版本守卫。写入使用临时文件和重命名（atomic write，原子写入），替换后校验语法，校验失败时恢复之前的字节。
 
 ## 兼容性
 

@@ -1,5 +1,7 @@
 # dsh-keepalive
 
+English | [中文](README.zh.md)
+
 **Status: Feature Plugin with Compatibility Patch. Tested only with DeepSeek Harness 0.1.0-rc.6.**
 
 `dsh-keepalive` runs a detached watchdog for the DSH Web process. When explicitly enabled, the watchdog restarts DSH after a process exit. An optional repair agent can inspect repeated startup failures, modify the plugin workspace, and retry from a snapshot.
@@ -30,7 +32,7 @@ The plugin targets exactly:
 - `@deepseek-ai/dsh-host-apiproxy@0.1.0-rc.6`: allow the `keepalive` settings namespace in the Web settings API.
 - `@deepseek-ai/dsh-subprocess-local@0.1.0-rc.6`: use `windowsHide: true` for local tool subprocesses on Windows.
 
-Version policy is adaptive by default: a copy whose installed version differs from `0.1.0-rc.6` is still patched when every anchor matches uniquely (recorded as an adaptive match), and skipped with a reason when anchors drifted; a strict programmatic mode restores the old exact-version-only apply behavior. One drifted copy never blocks the other target, and patch application never throws during host or watchdog startup. Restore (uninstall) remains strictly version-guarded. Writes use temporary files and rename, validate syntax after replacement, and restore the previous bytes on validation failure.
+Version policy is adaptive by default: a copy whose installed version differs from `0.1.0-rc.6` is still patched when every anchor matches uniquely (recorded as an adaptive match), and skipped with a reason when anchors drifted; a strict programmatic mode restores the old exact-version-only apply behavior. One drifted copy never blocks the other target, and patch application never throws during host or watchdog startup. The settings-namespace row is inserted at the top of the allowlist array so it cannot consume the tail anchor shared with `dsh-tavily-search-provider`; both plugins coexist in either install order. Restore (uninstall) remains strictly version-guarded. Writes use temporary files and rename, validate syntax after replacement, and restore the previous bytes on validation failure.
 
 ## Compatibility
 

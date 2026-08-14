@@ -20,7 +20,7 @@ const APIPROXY = "@deepseek-ai/dsh-host-apiproxy";
 const SUBPROCESS = "@deepseek-ai/dsh-subprocess-local";
 
 /** The canonical patched apiproxy content (what the plugin writes). */
-const PATCHED_APIPROXY = PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n];');
+const PATCHED_APIPROXY = PRISTINE_APIPROXY.replace('= [\n\t"agent-loop",', '= [\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n\t"agent-loop",');
 
 const findApplied = (report, name) => report.applied.find((entry) => entry.package === name);
 const findSkipped = (report, name) => report.skipped.find((entry) => entry.package === name);
@@ -92,7 +92,7 @@ try {
 	check(findApplied(r, SUBPROCESS) !== void 0, "the other target still patches when one anchor is missing");
 
 	/* ---- version match + ambiguous anchor → skip(anchor), file untouched ---- */
-	const ambiguousSource = PRISTINE_APIPROXY + '\nconst SECOND_ALLOWLIST = [\n\t"web-search-deepseek"\n];\n';
+	const ambiguousSource = PRISTINE_APIPROXY + '\nconst SECOND_ALLOWLIST = [\n\t"agent-loop",\n];\n';
 	const ambiguous = makeDshRoot(base, { apiproxySource: ambiguousSource });
 	r = ensureInstalledPatches({ dshRoot: ambiguous.root, log: silent });
 	const amb = findSkipped(r, APIPROXY);
@@ -115,6 +115,35 @@ try {
 	check(r.skipped.every((entry) => entry.reason === "already-patched"), "re-apply skips every copy with already-patched");
 	check(readFileSync(join(pristine.apiDir, "lib", "index.js"), "utf8") === apiAfterFirst, "re-apply leaves the file byte-identical");
 
+	/* ---- coexistence: dsh-tavily-search-provider's tail row does not
+	 * consume the head anchor, so keepalive still patches ---- */
+	const coexistBase = mkdtempSync(join(tmpdir(), "ka-coexist-"));
+	const tavilyInstalled = makeDshRoot(coexistBase, {
+		apiproxySource: PRISTINE_APIPROXY.replace('\t"web-search-deepseek"', '\t"web-search-deepseek",\n\t"dsh-tavily-search-provider"')
+	});
+	r = ensureInstalledPatches({ dshRoot: tavilyInstalled.root, log: silent });
+	check(findApplied(r, APIPROXY) !== void 0, "keepalive patches when the Tavily tail row is already present");
+	const tavilyCoexist = readFileSync(join(tavilyInstalled.apiDir, "lib", "index.js"), "utf8");
+	check(tavilyCoexist.includes('const WEB_SETTINGS_NAMESPACES = [\n\t"keepalive", // dsh-keepalive'), "keepalive row is inserted at the top of the array");
+	check(tavilyCoexist.includes('"dsh-tavily-search-provider"'), "the Tavily tail row survives keepalive's head insertion");
+	r = restoreInstalledPatches({ dshRoot: tavilyInstalled.root, log: silent });
+	check(r.ok === true && r.reverted.length === 2, "restore works on the coexisting layout");
+	check(readFileSync(join(tavilyInstalled.apiDir, "lib", "index.js"), "utf8").includes('"dsh-tavily-search-provider"'), "restore keeps the other plugin's row");
+	rmSync(coexistBase, { recursive: true, force: true });
+
+	/* ---- legacy tail layout from an older keepalive release counts as
+	 * already-patched (marker prefix), never duplicated at the head ---- */
+	const legacyBase = mkdtempSync(join(tmpdir(), "ka-legacy-"));
+	const legacyTail = makeDshRoot(legacyBase, {
+		apiproxySource: PRISTINE_APIPROXY.replace('\t"web-search-deepseek"', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card')
+	});
+	r = ensureInstalledPatches({ dshRoot: legacyTail.root, log: silent });
+	const legacySkip = findSkipped(r, APIPROXY);
+	check(legacySkip !== void 0 && legacySkip.reason === "already-patched", "a legacy tail keepalive row is treated as already-patched");
+	const legacyFile = readFileSync(join(legacyTail.apiDir, "lib", "index.js"), "utf8");
+	check(legacyFile.split('"keepalive", // dsh-keepalive').length - 1 === 1, "no duplicate keepalive row is added over a legacy tail row");
+	rmSync(legacyBase, { recursive: true, force: true });
+
 	/* ---- byte-level roundtrip ---- */
 	r = restoreInstalledPatches({ dshRoot: pristine.root, log: silent });
 	check(r.ok === true && r.reverted.length === 2, "restore reverts both patches");
@@ -132,7 +161,7 @@ try {
 
 	/* ---- restore blocked: non-canonical patched region ---- */
 	const drifted2 = makeDshRoot(base, {
-		apiproxySource: PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: edited by someone else\n];')
+		apiproxySource: PRISTINE_APIPROXY.replace('= [\n\t"agent-loop",', '= [\n\t"keepalive", // dsh-keepalive: edited by someone else\n\t"agent-loop",')
 	});
 	r = restoreInstalledPatches({ dshRoot: drifted2.root, log: silent });
 	const drift = findSkipped(r, APIPROXY);
