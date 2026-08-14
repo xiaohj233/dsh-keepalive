@@ -164,11 +164,17 @@ async function main() {
 				dshRoot: located.root,
 				log: (line) => console.log(`  ${line}`)
 			});
-			for (const r of result.results) {
-				if (r.ok) {
-					console.log(`ok — ${r.package}@${r.pinnedVersion}: ${r.status === "already-restored" ? "already restored" : "restored"}`);
+			/* v2 report: `reverted` are the restored files, `skipped` carries
+			 * every non-restored copy with its reason; already-restored is
+			 * benign, any other skip is a failure. */
+			for (const entry of result.reverted) {
+				console.log(`ok — ${entry.package}: restored`);
+			}
+			for (const entry of result.skipped) {
+				if (entry.reason === "already-restored") {
+					console.log(`ok — ${entry.package}: already restored`);
 				} else {
-					report(false, `${r.package}@${r.pinnedVersion}: ${r.reason}${r.detail ? ` (${r.detail})` : ""}`);
+					report(false, `${entry.package}: ${entry.reason}${entry.detail ? ` (${entry.detail})` : ""}`);
 				}
 			}
 		}

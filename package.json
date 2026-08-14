@@ -1,6 +1,6 @@
 {
   "name": "dsh-keepalive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Opt-in detached watchdog for the DSH Web process with optional snapshot-checked repair and explicit patch restoration.",
   "type": "module",
   "main": "lib/index.js",
@@ -19,6 +19,7 @@
     "watchdog.mjs",
     "cordis.patch.yml",
     "README.md",
+    "README.zh.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {

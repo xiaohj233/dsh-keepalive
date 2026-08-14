@@ -30,7 +30,7 @@ The plugin targets exactly:
 - `@deepseek-ai/dsh-host-apiproxy@0.1.0-rc.6`: allow the `keepalive` settings namespace in the Web settings API.
 - `@deepseek-ai/dsh-subprocess-local@0.1.0-rc.6`: use `windowsHide: true` for local tool subprocesses on Windows.
 
-Version mismatch, missing anchors, or duplicate anchors refuse the operation. Writes use temporary files and rename, validate syntax after replacement, and restore the previous bytes on validation failure.
+Version policy is adaptive by default: a copy whose installed version differs from `0.1.0-rc.6` is still patched when every anchor matches uniquely (recorded as an adaptive match), and skipped with a reason when anchors drifted; a strict programmatic mode restores the old exact-version-only apply behavior. One drifted copy never blocks the other target, and patch application never throws during host or watchdog startup. Restore (uninstall) remains strictly version-guarded. Writes use temporary files and rename, validate syntax after replacement, and restore the previous bytes on validation failure.
 
 ## Compatibility
 

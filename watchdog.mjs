@@ -390,7 +390,8 @@ function restoreResumeStateBytes(bytes) {
 
 /**
  * Apply the installed-package patches (settings-namespace exposure +
- * windowsHide). Idempotent, version-guarded, atomic — see
+ * windowsHide). v2: every installed copy is decided independently and the
+ * engine never throws for installation-state reasons — see
  * lib/installed-patches.mjs. Logged but never fatal here: the watchdog must
  * keep supervising even when the patches cannot be (re)applied.
  */
@@ -400,9 +401,18 @@ function applyInstalledPatches() {
 		log(`cannot resolve dsh root from bin (${BIN}): ${located.error} — installed-package patches not applied`);
 		return;
 	}
-	const result = ensureInstalledPatches({ dshRoot: located.root, log });
-	if (!result.ok) {
-		log(`installed patches incomplete: ${result.results.map((r) => `${r.package}: ${r.reason}${r.detail ? ` (${r.detail})` : ""}`).join("; ")}`);
+	try {
+		const result = ensureInstalledPatches({ dshRoot: located.root, log });
+		if (!result.ok) {
+			log(`installed patches incomplete: ${result.summary}`);
+			for (const entry of result.skipped) {
+				if (entry.reason !== "already-patched") {
+					log(`  ${entry.package}: ${entry.reason}${entry.detail ? ` (${entry.detail})` : ""}`);
+				}
+			}
+		}
+	} catch (error) {
+		log(`installed patches threw: ${String(error)} — continuing without patches`);
 	}
 }
 
@@ -425,8 +435,18 @@ async function main() {
 			process.exit(2);
 		}
 		const result = restoreInstalledPatches({ dshRoot: located.root, log });
-		for (const r of result.results) {
-			console.log(`dsh-keepalive: unpatch ${r.package}@${r.pinnedVersion}: ${r.ok ? (r.status === "already-restored" ? "already restored" : "restored") : `FAILED — ${r.reason}${r.detail ? ` (${r.detail})` : ""}`}`);
+		/* v2 report: `reverted` are the restored files, `skipped` carries
+		 * every non-restored copy with its reason; already-restored is
+		 * benign, any other skip makes the run fail (nonzero exit). */
+		for (const entry of result.reverted) {
+			console.log(`dsh-keepalive: unpatch ${entry.package}: restored`);
+		}
+		for (const entry of result.skipped) {
+			if (entry.reason === "already-restored") {
+				console.log(`dsh-keepalive: unpatch ${entry.package}: already restored`);
+			} else {
+				console.log(`dsh-keepalive: unpatch ${entry.package}: FAILED — ${entry.reason}${entry.detail ? ` (${entry.detail})` : ""}`);
+			}
 		}
 		process.exit(result.ok ? 0 : 1);
 	}

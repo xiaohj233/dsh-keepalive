@@ -81,7 +81,7 @@ try {
 	 * pristine and reports already-restored. */
 	const res2 = runUninstall(home2, fixture2.bin);
 	check(res2.status !== 0, "uninstall exits nonzero when a restore step is incomplete");
-	check(res2.stdout.includes("version-mismatch"), "output names the version-mismatch reason");
+	check(res2.stdout.includes(": version ("), "output names the version refusal reason");
 	check(readFileSync(join(fixture2.apiDir, "lib", "index.js"), "utf8") === PRISTINE_APIPROXY, "version-mismatched file untouched");
 	check(stateOf(home2).enabled === false && stateOf(home2).status === "disabled", "state still disabled even when restore fails");
 

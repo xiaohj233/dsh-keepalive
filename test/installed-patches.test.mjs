@@ -1,7 +1,9 @@
 /**
- * installed-patches tests: version guards, unique anchors, idempotent and
- * atomic apply, exact restore, and loud failure on ambiguity or drift.
- * Uses a fake DSH install root; never touches the real install.
+ * installed-patches tests (v2): per-target independence, adaptive vs strict
+ * version policy, unique anchors, idempotent and atomic apply, strict exact
+ * restore, and loud (never-throwing) skips on drift, ambiguity, or an
+ * unreadable manifest. Uses a fake DSH install root; never touches the real
+ * install.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +16,15 @@ const { check, done } = makeChecks("installed-patches");
 const base = mkdtempSync(join(tmpdir(), "ka-patch-test-"));
 const silent = () => {};
 
+const APIPROXY = "@deepseek-ai/dsh-host-apiproxy";
+const SUBPROCESS = "@deepseek-ai/dsh-subprocess-local";
+
+/** The canonical patched apiproxy content (what the plugin writes). */
+const PATCHED_APIPROXY = PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n];');
+
+const findApplied = (report, name) => report.applied.find((entry) => entry.package === name);
+const findSkipped = (report, name) => report.skipped.find((entry) => entry.package === name);
+
 try {
 	/* ---- resolveDshRootFromBin ---- */
 	const fixture = makeDshRoot(base);
@@ -21,87 +32,146 @@ try {
 	check(resolveDshRootFromBin(join(fixture.root, "elsewhere.js")).ok === false, "garbage bin path is rejected");
 	check(resolveDshRootFromBin("").ok === false, "empty bin path is rejected");
 
-	/* ---- apply on pristine: exactly the canonical delta ---- */
-	let r = ensureInstalledPatches({ dshRoot: fixture.root, log: silent });
-	check(r.ok === true && r.results.every((x) => x.ok && x.status === "applied"), "apply patches pristine files");
-	const apiPatched = readFileSync(join(fixture.apiDir, "lib", "index.js"), "utf8");
-	const subPatched = readFileSync(join(fixture.subDir, "lib", "index.js"), "utf8");
-	check(apiPatched.includes('"keepalive", // dsh-keepalive'), "apiproxy marker present after apply");
-	check(subPatched.includes("/* dsh-keepalive patch:"), "subprocess marker present after apply");
-	check(apiPatched === PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n];'), "apiproxy delta is exactly the canonical insertion");
-	check(subPatched !== PRISTINE_SUBPROCESS && subPatched.includes("windowsHide: true"), "subprocess delta inserts windowsHide only");
-
-	/* ---- idempotent re-apply ---- */
-	const apiAfterFirst = readFileSync(join(fixture.apiDir, "lib", "index.js"), "utf8");
-	r = ensureInstalledPatches({ dshRoot: fixture.root, log: silent });
-	check(r.ok === true && r.results.every((x) => x.status === "already"), "re-apply is a no-op (already)");
-	check(readFileSync(join(fixture.apiDir, "lib", "index.js"), "utf8") === apiAfterFirst, "re-apply leaves the file byte-identical");
-
-	/* ---- exact restore ---- */
-	r = restoreInstalledPatches({ dshRoot: fixture.root, log: silent });
-	check(r.ok === true && r.results.every((x) => x.status === "restored"), "restore reverts both patches");
-	check(readFileSync(join(fixture.apiDir, "lib", "index.js"), "utf8") === PRISTINE_APIPROXY, "apiproxy file byte-identical to pristine after restore");
-	check(readFileSync(join(fixture.subDir, "lib", "index.js"), "utf8") === PRISTINE_SUBPROCESS, "subprocess file byte-identical to pristine after restore");
-	r = restoreInstalledPatches({ dshRoot: fixture.root, log: silent });
-	check(r.ok === true && r.results.every((x) => x.status === "already-restored"), "second restore is a no-op (already-restored)");
-
-	/* ---- version mismatch refuses apply AND restore ---- */
+	/* ---- v2: adaptive mode patches an untested version when the anchor matches ---- */
 	const bumped = makeDshRoot(base, { apiproxyVersion: "0.1.0-rc.7" });
-	r = ensureInstalledPatches({ dshRoot: bumped.root, log: silent });
-	const apiMismatch = r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy");
-	check(apiMismatch.ok === false && apiMismatch.reason === "version-mismatch", "apply refuses a version-mismatched package");
-	check(readFileSync(join(bumped.apiDir, "lib", "index.js"), "utf8") === PRISTINE_APIPROXY, "version-mismatched file untouched by apply");
-	const subOk = r.results.find((x) => x.package === "@deepseek-ai/dsh-subprocess-local");
-	check(subOk.ok === true, "the other, matching package still patches");
-	r = restoreInstalledPatches({ dshRoot: bumped.root, log: silent });
-	check(r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy").reason === "version-mismatch", "restore refuses a version-mismatched package");
-	writeFileSync(join(bumped.apiDir, "lib", "index.js"), PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n];'));
-	r = restoreInstalledPatches({ dshRoot: bumped.root, log: silent });
-	check(r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy").reason === "version-mismatch", "restore still refuses even with a marker present (never strip an upgraded package blindly)");
+	let r = ensureInstalledPatches({ dshRoot: bumped.root, log: silent });
+	check(r.ok === true, "adaptive apply is ok when an untested version still matches its anchor");
+	const bumpedApi = findApplied(r, APIPROXY);
+	check(bumpedApi !== void 0 && bumpedApi.adaptive === true, "untested version patched with adaptive: true");
+	check(readFileSync(join(bumped.apiDir, "lib", "index.js"), "utf8") === PATCHED_APIPROXY, "adaptive patch wrote the canonical insertion");
+	check(findApplied(r, SUBPROCESS) !== void 0, "the exact-version target also patches in adaptive mode");
 
-	/* ---- missing package ---- */
-	const missing = makeDshRoot(base, { apiproxyVersion: "0.1.0-rc.6" });
+	/* ---- v2: adaptive mode skips an untested version whose anchor drifted;
+	 * the other target still patches ---- */
+	const drifted = makeDshRoot(base, { apiproxyVersion: "0.2.0", apiproxySource: "// a rewritten upstream file\n" });
+	r = ensureInstalledPatches({ dshRoot: drifted.root, log: silent });
+	check(r.ok === false, "adaptive apply is not ok when an untested version's anchor drifted");
+	const driftedSkip = findSkipped(r, APIPROXY);
+	check(driftedSkip !== void 0 && driftedSkip.reason === "version-anchor", "drifted untested version skips with version-anchor");
+	check(readFileSync(join(drifted.apiDir, "lib", "index.js"), "utf8") === "// a rewritten upstream file\n", "drifted file left untouched");
+	check(findApplied(r, SUBPROCESS) !== void 0, "the other target still patches when one drifted");
+
+	/* ---- v2: strict mode refuses every untested version even when anchors match ---- */
+	const strictRoot = makeDshRoot(base, { apiproxyVersion: "0.1.0-rc.7" });
+	r = ensureInstalledPatches({ dshRoot: strictRoot.root, strict: true, log: silent });
+	check(r.ok === false, "strict apply is not ok when a version mismatches");
+	const strictSkip = findSkipped(r, APIPROXY);
+	check(strictSkip !== void 0 && strictSkip.reason === "version", "strict mode skips an untested version with version");
+	check(readFileSync(join(strictRoot.apiDir, "lib", "index.js"), "utf8") === PRISTINE_APIPROXY, "strict-mode mismatch leaves the file untouched");
+	check(findApplied(r, SUBPROCESS) !== void 0, "the exact-version target still patches in strict mode");
+
+	/* ---- v2: unreadable manifest skips that package without throwing ---- */
+	const badManifest = makeDshRoot(base);
+	writeFileSync(join(badManifest.apiDir, "package.json"), "{ not json");
+	r = ensureInstalledPatches({ dshRoot: badManifest.root, log: silent });
+	check(r.ok === false, "unreadable manifest makes the run not ok");
+	check(findSkipped(r, APIPROXY)?.reason === "unreadable-manifest", "unreadable manifest skips with unreadable-manifest");
+	check(findApplied(r, SUBPROCESS) !== void 0, "the readable target still patches when a manifest is unreadable");
+	check(readFileSync(join(badManifest.subDir, "lib", "index.js"), "utf8").includes("/* dsh-keepalive patch:"), "readable target actually patched");
+	r = restoreInstalledPatches({ dshRoot: badManifest.root, log: silent });
+	check(findSkipped(r, APIPROXY)?.reason === "unreadable-manifest", "restore skips an unreadable manifest without throwing");
+	check(r.reverted.some((entry) => entry.package === SUBPROCESS), "restore still reverts the readable target");
+
+	/* ---- missing package is reported, not guessed around ---- */
+	const missing = makeDshRoot(base);
 	rmSync(join(missing.root, "node_modules", "@deepseek-ai", "dsh-subprocess-local"), { recursive: true, force: true });
 	r = ensureInstalledPatches({ dshRoot: missing.root, log: silent });
-	check(r.results.find((x) => x.package === "@deepseek-ai/dsh-subprocess-local").reason === "package-not-found", "missing package directory is reported, not guessed around");
+	check(findSkipped(r, SUBPROCESS)?.reason === "package-not-found", "apply reports a missing package directory");
+	check(findApplied(r, APIPROXY) !== void 0, "the present package still patches when one is missing");
+	r = restoreInstalledPatches({ dshRoot: missing.root, log: silent });
+	check(findSkipped(r, SUBPROCESS)?.reason === "package-not-found", "restore reports a missing package directory");
+	check(r.reverted.some((entry) => entry.package === APIPROXY), "restore still reverts the present package");
 
-	/* ---- ambiguous anchor refuses apply ---- */
+	/* ---- version match + anchor missing → skip(anchor); other target still patches ---- */
+	const noAnchor = makeDshRoot(base, { apiproxySource: "// a rewritten upstream file\n" });
+	r = ensureInstalledPatches({ dshRoot: noAnchor.root, log: silent });
+	check(r.ok === false, "missing anchor makes the run not ok");
+	const noAnchorSkip = findSkipped(r, APIPROXY);
+	check(noAnchorSkip !== void 0 && noAnchorSkip.reason === "anchor", "version-matched copy with a missing anchor skips with anchor");
+	check(noAnchorSkip.detail.includes("missing-anchor"), "anchor skip names the missing-anchor reason");
+	check(findApplied(r, SUBPROCESS) !== void 0, "the other target still patches when one anchor is missing");
+
+	/* ---- version match + ambiguous anchor → skip(anchor), file untouched ---- */
 	const ambiguousSource = PRISTINE_APIPROXY + '\nconst SECOND_ALLOWLIST = [\n\t"web-search-deepseek"\n];\n';
 	const ambiguous = makeDshRoot(base, { apiproxySource: ambiguousSource });
 	r = ensureInstalledPatches({ dshRoot: ambiguous.root, log: silent });
-	const amb = r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy");
-	check(amb.ok === false && amb.reason === "ambiguous-anchor", "apply refuses when the anchor occurs twice");
+	const amb = findSkipped(r, APIPROXY);
+	check(amb !== void 0 && amb.reason === "anchor" && amb.detail.includes("ambiguous-anchor"), "ambiguous anchor skips with anchor/ambiguous-anchor");
 	check(readFileSync(join(ambiguous.apiDir, "lib", "index.js"), "utf8") === ambiguousSource, "ambiguous-anchor file left untouched");
 
-	/* ---- ambiguous marker refuses apply and restore ---- */
-	const dup = makeDshRoot(base);
-	writeFileSync(
-		join(dup.apiDir, "lib", "index.js"),
-		PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: keep-alive watchdog configuration card\n];') +
-			'\n// "keepalive", // dsh-keepalive legacy comment\n'
-	);
-	r = ensureInstalledPatches({ dshRoot: dup.root, log: silent });
-	check(r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy").reason === "ambiguous-marker", "apply refuses two markers");
-	r = restoreInstalledPatches({ dshRoot: dup.root, log: silent });
-	check(r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy").reason === "ambiguous-marker", "restore refuses two markers");
+	/* ---- apply on pristine: exactly the canonical delta ---- */
+	const pristine = makeDshRoot(base);
+	r = ensureInstalledPatches({ dshRoot: pristine.root, log: silent });
+	check(r.ok === true && r.applied.length === 2 && r.skipped.length === 0, "apply patches both pristine files");
+	check(r.applied.every((entry) => entry.adaptive !== true), "exact-version patches are not marked adaptive");
+	check(readFileSync(join(pristine.apiDir, "lib", "index.js"), "utf8") === PATCHED_APIPROXY, "apiproxy delta is exactly the canonical insertion");
+	const subPatched = readFileSync(join(pristine.subDir, "lib", "index.js"), "utf8");
+	check(subPatched !== PRISTINE_SUBPROCESS && subPatched.includes("windowsHide: true"), "subprocess delta inserts windowsHide only");
 
-	/* ---- restore fails loudly when the patched region changed ---- */
-	const drifted = makeDshRoot(base);
-	writeFileSync(
-		join(drifted.apiDir, "lib", "index.js"),
-		PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: edited by someone else\n];')
-	);
-	r = restoreInstalledPatches({ dshRoot: drifted.root, log: silent });
-	const drift = r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy");
-	check(drift.ok === false && drift.reason === "patch-region-changed", "restore refuses a non-canonical patched region");
-	check(readFileSync(join(drifted.apiDir, "lib", "index.js"), "utf8").includes("edited by someone else"), "drifted file left untouched by restore");
+	/* ---- idempotent re-apply ---- */
+	const apiAfterFirst = readFileSync(join(pristine.apiDir, "lib", "index.js"), "utf8");
+	r = ensureInstalledPatches({ dshRoot: pristine.root, log: silent });
+	check(r.ok === true && r.applied.length === 0 && r.skipped.length === 2, "re-apply is a no-op");
+	check(r.skipped.every((entry) => entry.reason === "already-patched"), "re-apply skips every copy with already-patched");
+	check(readFileSync(join(pristine.apiDir, "lib", "index.js"), "utf8") === apiAfterFirst, "re-apply leaves the file byte-identical");
+
+	/* ---- byte-level roundtrip ---- */
+	r = restoreInstalledPatches({ dshRoot: pristine.root, log: silent });
+	check(r.ok === true && r.reverted.length === 2, "restore reverts both patches");
+	check(readFileSync(join(pristine.apiDir, "lib", "index.js"), "utf8") === PRISTINE_APIPROXY, "apiproxy file byte-identical to pristine after restore");
+	check(readFileSync(join(pristine.subDir, "lib", "index.js"), "utf8") === PRISTINE_SUBPROCESS, "subprocess file byte-identical to pristine after restore");
+	r = restoreInstalledPatches({ dshRoot: pristine.root, log: silent });
+	check(r.ok === true && r.reverted.length === 0 && r.skipped.every((entry) => entry.reason === "already-restored"), "second restore is a no-op (already-restored)");
+
+	/* ---- restore is strict: untested version refused even with marker present ---- */
+	const strictRestore = makeDshRoot(base, { apiproxyVersion: "0.1.0-rc.7", apiproxySource: PATCHED_APIPROXY });
+	r = restoreInstalledPatches({ dshRoot: strictRestore.root, log: silent });
+	check(r.ok === false, "restore is not ok when a version mismatches");
+	check(findSkipped(r, APIPROXY)?.reason === "version", "restore refuses an untested version with version");
+	check(readFileSync(join(strictRestore.apiDir, "lib", "index.js"), "utf8") === PATCHED_APIPROXY, "restore never strips an upgraded package blindly");
+
+	/* ---- restore blocked: non-canonical patched region ---- */
+	const drifted2 = makeDshRoot(base, {
+		apiproxySource: PRISTINE_APIPROXY.replace('\t"web-search-deepseek"\n];', '\t"web-search-deepseek",\n\t"keepalive", // dsh-keepalive: edited by someone else\n];')
+	});
+	r = restoreInstalledPatches({ dshRoot: drifted2.root, log: silent });
+	const drift = findSkipped(r, APIPROXY);
+	check(drift !== void 0 && drift.reason === "restore-blocked" && drift.detail.includes("marker-without-to"), "restore refuses a non-canonical patched region (restore-blocked)");
+	check(readFileSync(join(drifted2.apiDir, "lib", "index.js"), "utf8").includes("edited by someone else"), "drifted file left untouched by restore");
+
+	/* ---- restore blocked: patched region occurs twice ---- */
+	const doubledTo = makeDshRoot(base, { apiproxySource: PATCHED_APIPROXY + "\n" + PATCHED_APIPROXY });
+	r = restoreInstalledPatches({ dshRoot: doubledTo.root, log: silent });
+	const dblTo = findSkipped(r, APIPROXY);
+	check(dblTo !== void 0 && dblTo.reason === "restore-blocked" && dblTo.detail.includes("ambiguous-to"), "restore refuses a doubled patched region (restore-blocked)");
+	check(readFileSync(join(doubledTo.apiDir, "lib", "index.js"), "utf8") === PATCHED_APIPROXY + "\n" + PATCHED_APIPROXY, "doubled-region file left untouched by restore");
+
+	/* ---- apply with a doubled marker is already-patched (idempotent) ---- */
+	const dupMarker = makeDshRoot(base, { apiproxySource: PATCHED_APIPROXY + '\n// "keepalive", // dsh-keepalive legacy comment\n' });
+	r = ensureInstalledPatches({ dshRoot: dupMarker.root, log: silent });
+	const dup = findSkipped(r, APIPROXY);
+	check(dup !== void 0 && dup.reason === "already-patched", "apply treats a doubled marker as already-patched");
+	check(readFileSync(join(dupMarker.apiDir, "lib", "index.js"), "utf8") === PATCHED_APIPROXY + '\n// "keepalive", // dsh-keepalive legacy comment\n', "doubled-marker file left untouched by apply");
+
+	/* ---- double-anchor dedupe: the same physical file reachable from two
+	 * anchors is patched exactly once ---- */
+	const dedupe = makeDshRoot(base);
+	r = ensureInstalledPatches({
+		dshRoot: dedupe.root,
+		anchors: [join(dedupe.root, "package.json"), join(dedupe.root, "lib", "package.json")],
+		log: silent
+	});
+	check(r.ok === true && r.applied.length === 2, "two anchors resolving the same files patch exactly once");
+	const dedupedApi = readFileSync(join(dedupe.apiDir, "lib", "index.js"), "utf8");
+	check(dedupedApi.split('"keepalive", // dsh-keepalive').length - 1 === 1, "apiproxy marker appears exactly once after dedupe");
+	check(readFileSync(join(dedupe.subDir, "lib", "index.js"), "utf8").split("/* dsh-keepalive patch:").length - 1 === 1, "subprocess marker appears exactly once after dedupe");
 
 	/* ---- atomic apply: syntax-check failure reverts the file ---- */
 	const brokenSource = "const broken = ;\n" + PRISTINE_APIPROXY;
 	const broken = makeDshRoot(base, { apiproxySource: brokenSource });
 	r = ensureInstalledPatches({ dshRoot: broken.root, log: silent });
-	const bad = r.results.find((x) => x.package === "@deepseek-ai/dsh-host-apiproxy");
-	check(bad.ok === false && bad.reason === "syntax-check-failed", "apply fails when the patched file fails node --check");
+	const bad = findSkipped(r, APIPROXY);
+	check(bad !== void 0 && bad.reason === "syntax-check-failed", "apply fails when the patched file fails node --check");
 	check(readFileSync(join(broken.apiDir, "lib", "index.js"), "utf8") === brokenSource, "syntax-check failure reverts the file to its previous bytes");
 
 	/* ---- patch catalog sanity ---- */
