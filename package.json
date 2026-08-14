@@ -1,6 +1,6 @@
 {
   "name": "dsh-keepalive",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Opt-in detached watchdog for the DSH Web process with optional snapshot-checked repair and explicit patch restoration.",
   "type": "module",
   "main": "lib/index.js",
@@ -37,7 +37,14 @@
     },
     "client": {
       "platform": "web",
-      "immediately": true
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   },
   "engines": {
