@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+*.tgz
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+
+# Runtime state
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.dsh/
+runtime/
+
+# Screenshots and images
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Backups and archives
+*.bak
+*~
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local artifacts
+dumps/
+
+# OS
+.DS_Store
+Thumbs.db

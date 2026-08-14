@@ -1,0 +1,22 @@
+# dsh-keepalive — 保活：DSH 被关闭/崩溃后自动拉起；拉起失败调用 agent 修复（只改插件目录）。
+#
+# 1) insert 本插件的 host 行：提供 /api/keepalive/* 路由（状态、开关、日志）
+#    并确保独立 watchdog 进程在跑（watchdog 不依赖本进程存活）。
+# 2) client bundle 由 profile bundles 自动加载（配置卡片渲染在官方
+#    "设置 → 插件 → 可配置" 页面里，与官方卡片同风格）。
+#
+# 配置的真源是 settings.yaml 的 `keepalive:` 段（官方配置卡片里编辑）：
+#   enabled          — 保活总开关
+#   autoRepair       — 拉起失败时是否调用 agent 自动修复
+#   repairProvider   — 修复用哪个厂商（空 = 跟随对话默认）
+#   repairModel      — 修复用哪个模型（空 = 厂商默认）
+#   checkIntervalMs  — watchdog 检查间隔（毫秒）
+#   bootWaitMs       — 拉起后等待就绪的超时（毫秒）
+- insert:
+    - id: dsh-keepalive
+      name: 'dsh-keepalive'
+      inject: [webServer, loader]
+      config:
+        # cordis 层兜底值（settings.yaml 的 keepalive 段优先）。
+        checkIntervalMs: 5000
+        bootWaitMs: 25000
