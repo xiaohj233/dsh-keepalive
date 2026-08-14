@@ -1,6 +1,6 @@
 {
   "name": "dsh-keepalive",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Opt-in detached watchdog for the DSH Web process with optional snapshot-checked repair and explicit patch restoration.",
   "type": "module",
   "main": "lib/index.js",
@@ -40,14 +40,6 @@
       "immediately": true
     }
   },
-  "dependencies": {
-    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-home-paths": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1",
-    "react": "^18.2.0"
-  },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
     "pnpm": ">=10.0.0"
@@ -60,5 +52,13 @@
   "homepage": "https://github.com/xiaohj233/dsh-keepalive#readme",
   "bugs": {
     "url": "https://github.com/xiaohj233/dsh-keepalive/issues"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-home-paths": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "react": "^18.2.0"
   }
 }
