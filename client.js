@@ -470,6 +470,7 @@ window.__ModuleLoader__.load({
 										props.state.failed
 											? jsxRuntime.jsx("p", { className: C.failed, children: "保存失败，请重试" })
 											: null,
+										props.action ? props.action : null,
 										jsxRuntime.jsx("button", {
 											type: "button",
 											className: C.discard,
@@ -511,6 +512,31 @@ window.__ModuleLoader__.load({
 				return function () { alive = false; };
 			}, []);
 
+			var restartingState = react.useState(false);
+			var restarting = restartingState[0];
+			var setRestarting = restartingState[1];
+
+			/** 手动重启：确认后请求 host 退出；看门狗（或兜底重启器）以相同
+			 * 命令拉起，页面随后由下方 webPid 轮询自动刷新。 */
+			function requestRestart() {
+				if (restarting) return;
+				if (!window.confirm("确定手动重启 DSH Web 吗？当前会话会保存，页面将在重启后自动刷新。")) return;
+				setRestarting(true);
+				fetch("/api/keepalive/restart", { method: "POST", cache: "no-store" })
+					.then(function (res) { return res.json(); })
+					.then(function (payload) {
+						if (payload === null || payload.ok !== true) {
+							setRestarting(false);
+							window.alert("重启请求失败：" + (payload && payload.error ? payload.error : "未知错误"));
+						}
+						/* ok：页面会经 webPid 轮询自动 reload */
+					})
+					.catch(function () {
+						setRestarting(false);
+						window.alert("重启请求失败：网络错误");
+					});
+			}
+
 			var disabled = !state.writable;
 			var selectedProvider = state.repairProvider.text;
 			var providerModels = [];
@@ -518,12 +544,23 @@ window.__ModuleLoader__.load({
 				if (providers[i].name === selectedProvider) providerModels = providers[i].models ?? [];
 			}
 
+			/* 官方次按钮样式（C.discard），放在卡片 footer，与「放弃/保存」同排 */
+			var restartButton = jsxRuntime.jsx("button", {
+				type: "button",
+				className: C.discard,
+				title: "立即重启 DSH Web 进程：看门狗（或兜底重启器）会以相同命令重新拉起，页面随后自动刷新",
+				disabled: restarting,
+				onClick: function () { requestRestart(); },
+				children: restarting ? "正在重启…" : "手动重启"
+			});
+
 			return jsxRuntime.jsx(PluginCard, {
 				title: "保活",
 				description: "DSH 被关闭或崩溃后自动拉起；拉起失败时由 DSH 自身的 agent 修复（仅限插件目录并带快照回滚）",
 				state: state,
 				onSave: props.save,
 				onDiscard: props.discard,
+				action: restartButton,
 				children: [
 					jsxRuntime.jsx(ToggleField, {
 						id: "keepalive-enabled",

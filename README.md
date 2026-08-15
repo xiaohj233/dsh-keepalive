@@ -15,6 +15,7 @@ A Web process that exits cannot restart itself. DSH provides stream idle watchdo
 - Adds a Plugins settings card for watchdog configuration.
 - Starts a detached Node watchdog only when `enabled` is true.
 - Checks process health and relaunches the same DSH binary and arguments.
+- Manual restart: the card's "手动重启" button (or `POST /api/keepalive/restart`) — the current process exits and the watchdog relaunches it; when no watchdog is running, the fallback restarter (`restarter.mjs`) relaunches with the same binary and arguments.
 - Applies guarded compatibility patches for the settings namespace and hidden Windows child processes.
 - Optionally runs a repair agent after repeated boot failures.
 - Snapshots the allowed repair workspace, validates resulting paths/configuration/syntax, and rolls back failed repairs.
