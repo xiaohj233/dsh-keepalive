@@ -81,7 +81,8 @@ try {
 	check(repair.includes('model: "deepseek-v4-flash\\n  enabled: true"'), "repair model encoded as one-line JSON literal");
 	check(repair.includes('apiKeyEnv: "BENDI_API_KEY\\" # x"'), "repair apiKeyEnv encoded safely");
 	check(repair.includes('baseURL: "https://api.example.com/v1"'), "repair baseURL encoded");
-	check(repair.split("\n").length === 20, "repair settings have exactly the 20 canonical lines (no injected line breaks)");
+	check(repair.includes('reasoningEffort: "max"'), "repair runtime requests max reasoning effort by default");
+	check(repair.split("\n").length === 26, "repair settings have exactly the 26 canonical lines (no injected line breaks)");
 
 	/* ---- llm config parse: quoted and unquoted values ---- */
 	const llm = parseLlmConfig([

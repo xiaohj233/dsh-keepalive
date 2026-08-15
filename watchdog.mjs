@@ -320,7 +320,7 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		``,
 		`要求：`,
 		`1. 先阅读完整错误、相关日志、DSH 官方源码与报错插件的真实文件结构，自行确定根因后再做最小修改；不要凭猜测重写 Config、inject、patch、bundle 或目录结构。`,
-		`2. 只应修改 ~/.dsh/plugins 目录下的文件（工作区写权限不是完整隔离边界；修改会被快照审计，越界或语法错误会被回滚）；不要修改 settings、profile、session、storage 或 DSH 官方安装。`,
+		`2. 只应修改用户插件文件：(a) ~/.dsh/plugins 目录，(b) ~/.dsh/profiles/web/node_modules 下以 dsh- 开头的用户插件包（如 dsh-resume、dsh-keepalive、dsh-tavily-search-provider 等，含其 cordis.patch.yml、package.json 等包内文件）。禁止修改 node_modules/@deepseek-ai/（官方主框架包）、settings.yaml、profile 配置、session、storage、keepalive 状态或 DSH 官方安装；修改会被快照审计，越界或语法错误会被回滚。`,
 		`3. 不要删除、移动、重命名文件；不要卸载、清理、重置。`,
 		`4. 如果根因不在用户插件，停止修改并用中文说明根因和建议。`,
 		`5. 修复后对每个修改过的 .js/.mjs 执行 node --check 自检。`,
@@ -329,7 +329,7 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 	].join("\n");
 	log("headless repair task started (isolated runtime)");
 	const child = spawn(process.execPath, [BIN, "--profile", "headless", task], {
-		cwd: join(HOME, "plugins"),
+		cwd: join(HOME, "profiles", "web"),
 		env: { ...process.env, DSH_HOME: repairHome },
 		windowsHide: true,
 		stdio: ["ignore", "pipe", "pipe"]
@@ -342,13 +342,15 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		out += d;
 	});
 	const result = await new Promise((resolveDone) => {
+		let timedOut = false;
 		const timer = setTimeout(() => {
 			killTree(child.pid);
-			resolveDone({ code: null, out });
-		}, 420000);
+			timedOut = true;
+			resolveDone({ code: null, out, timedOut: true });
+		}, 900000);
 		child.on("close", (code) => {
 			clearTimeout(timer);
-			resolveDone({ code, out });
+			resolveDone({ code, out, timedOut: false });
 		});
 	});
 	/* Never leave the user's credentials behind in the isolated runtime. The
@@ -359,7 +361,7 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 	} catch {
 		/* best-effort */
 	}
-	log(`headless repair finished code=${result.code} (${result.out.length} chars)`);
+	log(`headless repair finished code=${result.code} (${result.out.length} chars)${result.timedOut ? " — TIMED OUT after 900s" : ""}`);
 	return { ok: result.code === 0, out: result.out.slice(-4000) };
 }
 
@@ -597,7 +599,16 @@ async function main() {
 		const badSyntax = [];
 		for (const rel of diff.changed) {
 			if (/\.(js|mjs)$/i.test(rel)) {
-				const check = spawnSync(process.execPath, ["--check", join(HOME, "plugins", rel)], {
+				let abs;
+				if (rel.startsWith("profileplug\\")) {
+					const [pkgName, ...rest] = rel.slice("profileplug\\".length).split("\\");
+					abs = join(HOME, "profiles", "web", "node_modules", pkgName, ...rest);
+				} else if (rel.startsWith("plugins\\")) {
+					abs = join(HOME, "plugins", rel.slice("plugins\\".length));
+				} else {
+					abs = join(HOME, rel);
+				}
+				const check = spawnSync(process.execPath, ["--check", abs], {
 					timeout: 30000,
 					windowsHide: true,
 					encoding: "utf8"

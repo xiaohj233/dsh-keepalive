@@ -23,7 +23,7 @@ try {
 	writeFileSync(join(PLUGINS, "dsh-c", "new.js"), "export const c = 3;\n"); // added
 	writeFileSync(join(HOME, "settings.yaml"), "permission:\n  defaultPreset: read-only\n"); // outside
 	const d1 = diffSnapshot(snap1);
-	check(d1.changed.includes("dsh-a\\lib.js") && d1.changed.includes("dsh-c\\new.js"), "diff detects changed + added plugin files");
+	check(d1.changed.includes("plugins\\dsh-a\\lib.js") && d1.changed.includes("plugins\\dsh-c\\new.js"), "diff detects changed + added plugin files");
 	check(d1.outsideDrift.includes("settings.yaml"), "diff detects outside drift (detection only)");
 	const roll1 = restoreSnapshot(snap1);
 	check(readFileSync(join(PLUGINS, "dsh-a", "lib.js"), "utf8") === "export const a = 1;\n", "rollback restores the changed plugin file");
@@ -35,9 +35,34 @@ try {
 	const snap2 = takeSnapshot(HOME, "t2");
 	rmSync(join(PLUGINS, "dsh-b", "index.mjs"), { force: true });
 	const d2 = diffSnapshot(snap2);
-	check(d2.removed.length === 1 && d2.removed[0] === "dsh-b\\index.mjs", "diff detects a removed plugin file");
+	check(d2.removed.length === 1 && d2.removed[0] === "plugins\\dsh-b\\index.mjs", "diff detects a removed plugin file");
 	restoreSnapshot(snap2);
 	check(existsSync(join(PLUGINS, "dsh-b", "index.mjs")), "rollback restores the removed plugin file");
+
+	/* ---- scenario 5: profile user plugins (GitHub-installed dsh-* packages) are
+	 * snapshotted, diffed, and rolled back like the local plugins tree ---- */
+	const profileNm = join(HOME, "profiles", "web", "node_modules");
+	mkdirSync(join(profileNm, "dsh-resume", "lib"), { recursive: true });
+	mkdirSync(join(profileNm, "dsh-keepalive", "lib"), { recursive: true });
+	writeFileSync(join(profileNm, "dsh-resume", "package.json"), JSON.stringify({ name: "dsh-resume", version: "0.2.1" }));
+	writeFileSync(join(profileNm, "dsh-resume", "lib", "index.js"), "export const ok = 1;\n");
+	writeFileSync(join(profileNm, "dsh-keepalive", "lib", "index.js"), "export const keep = 1;\n");
+	const snap5 = takeSnapshot(HOME, "t5");
+	writeFileSync(join(profileNm, "dsh-resume", "lib", "index.js"), "export const ok = 2;\n"); // changed
+	writeFileSync(join(profileNm, "dsh-resume", "lib", "extra.js"), "export const extra = 1;\n"); // added
+	rmSync(join(profileNm, "dsh-keepalive", "lib", "index.js"), { force: true }); // removed
+	const d5 = diffSnapshot(snap5);
+	check(d5.changed.includes("profileplug\\dsh-resume\\lib\\index.js") && d5.changed.includes("profileplug\\dsh-resume\\lib\\extra.js"), "diff detects changed + added profile plugin files");
+	check(d5.removed.includes("profileplug\\dsh-keepalive\\lib\\index.js"), "diff detects a removed profile plugin file");
+	const roll5 = restoreSnapshot(snap5);
+	check(readFileSync(join(profileNm, "dsh-resume", "lib", "index.js"), "utf8") === "export const ok = 1;\n", "rollback restores the changed profile plugin file");
+	check(!existsSync(join(profileNm, "dsh-resume", "lib", "extra.js")), "rollback removes the added profile plugin file");
+	check(existsSync(join(profileNm, "dsh-keepalive", "lib", "index.js")), "rollback restores the removed profile plugin file");
+	/* an official @deepseek-ai package is NOT a user plugin root and must not be snapshotted */
+	mkdirSync(join(profileNm, "@deepseek-ai", "dsh-session", "lib"), { recursive: true });
+	writeFileSync(join(profileNm, "@deepseek-ai", "dsh-session", "lib", "index.js"), "export const official = 1;\n");
+	const d5b = diffSnapshot(snap5);
+	check(!d5b.changed.some((key) => key.includes("@deepseek-ai")) && !d5b.removed.some((key) => key.includes("@deepseek-ai")), "official packages are outside the user-plugin rollback scope");
 
 	/* ---- scenario 3: untouched tree diffs empty and rolls back to the same bytes ---- */
 	const snap3 = takeSnapshot(HOME, "t3");
