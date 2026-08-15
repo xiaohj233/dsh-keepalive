@@ -556,11 +556,21 @@ async function main() {
 			continue;
 		}
 		if (await waitAlive(bootWait)) {
-			silentStreak = 0;
-			const fresh = portPid();
-			writeState({ status: "watching", lastRestoredAt: new Date().toISOString(), repairCount: 0, ...fresh !== void 0 ? { webPid: fresh } : {} });
-			log("web is back up after relaunch");
-			continue;
+			/* A broken plugin tree can bind the port briefly (parallel plugin
+			 * loading) and then crash the whole process. waitAlive may have
+			 * seen only that brief window, so confirm the web really STAYS
+			 * up: settle, then probe again. A relaunch that does not survive
+			 * the settle window falls through to the repair pass instead of
+			 * being misjudged as "back up". */
+			await sleep(5000);
+			if (await webAlive(2000)) {
+				silentStreak = 0;
+				const fresh = portPid();
+				writeState({ status: "watching", lastRestoredAt: new Date().toISOString(), repairCount: 0, ...fresh !== void 0 ? { webPid: fresh } : {} });
+				log("web is back up after relaunch");
+				continue;
+			}
+			log("web answered during the relaunch wait but did not stay up — treating as relaunch failure");
 		}
 
 		// ---- relaunch failed: one repair pass, then exactly one final launch ----
