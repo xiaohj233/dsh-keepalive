@@ -1,6 +1,6 @@
 {
   "name": "dsh-keepalive",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Opt-in detached watchdog for the DSH Web process with optional snapshot-checked repair and explicit patch restoration.",
   "type": "module",
   "main": "lib/index.js",

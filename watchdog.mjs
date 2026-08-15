@@ -44,7 +44,7 @@ import { join } from "node:path";
 import http from "node:http";
 import { parseKeepaliveConfig, parseLlmConfig, renderRepairRuntimeSettings } from "./lib/llm-config.mjs";
 import { ensureInstalledPatches, restoreInstalledPatches, resolveDshRootFromBin } from "./lib/installed-patches.mjs";
-import { takeSnapshot, diffSnapshot, restoreSnapshot as rollbackSnapshot } from "./lib/snapshot-rollback.mjs";
+import { takeSnapshot, diffSnapshot, restoreSnapshot as rollbackSnapshot, linkTargetDirs } from "./lib/snapshot-rollback.mjs";
 import { createRepairPage } from "./lib/repair-page.mjs";
 
 const BIN = process.argv[2];
@@ -314,6 +314,12 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		log("repair runtime unavailable — failing repair without touching anything");
 		return { ok: false, out: "repair runtime unavailable" };
 	}
+	/* The headless agent's sandbox is workspace-write rooted at its cwd.
+	 * Rooting it at the common parent of every link:/file: dev checkout lets
+	 * the agent edit the failing plugin's source (sanctioned since v0.2.8,
+	 * snapshot-tracked and rollback-capable); falls back to the web profile
+	 * dir when there are no link targets. */
+	const workspace = repairWorkspaceRoot();
 	const task = [
 		`DSH web 的一次真实启动失败。以下是这次真实启动的完整输出：`,
 		``,
@@ -327,11 +333,12 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		`5. 修复后对每个修改过的 .js/.mjs 执行 node --check 自检。`,
 		`6. 输出简洁中文总结：根因、修改的文件、验证结果。`,
 		`7. 不要启动或重启 web 服务器（外部 watchdog 负责验证）。`,
-		`8. 进度汇报：每完成一个重要步骤（分析根因、定位文件、实施修改、自检、总结），输出一行以 [进度] 开头的中文说明，例如：[进度] 已定位根因：缺少 raf 变量声明。这些行会实时展示给用户。`
+		`8. 进度汇报：每完成一个重要步骤（分析根因、定位文件、实施修改、自检、总结），输出一行以 [进度] 开头的中文说明，例如：[进度] 已定位根因：缺少 raf 变量声明。这些行会实时展示给用户。`,
+		`9. 你的工作区根（workspace-write 沙箱允许写入的根目录）是：${workspace ?? join(HOME, "profiles", "web")}。本次允许修改的 link 目标开发目录是：${linkTargetDirs(HOME).join("；") || "无"}。只在允许范围内写入。`
 	].join("\n");
 	log("headless repair task started (isolated runtime)");
 	const child = spawn(process.execPath, [BIN, "--profile", "headless", task], {
-		cwd: join(HOME, "profiles", "web"),
+		cwd: workspace ?? join(HOME, "profiles", "web"),
 		env: { ...process.env, DSH_HOME: repairHome },
 		windowsHide: true,
 		stdio: ["ignore", "pipe", "pipe"]
@@ -373,6 +380,26 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 	}
 	log(`headless repair finished code=${result.code} (${result.out.length} chars)${result.timedOut ? " — TIMED OUT after 900s" : ""}`);
 	return { ok: result.code === 0, out: result.out.slice(-4000) };
+}
+
+/** Common parent directory of every link:/file: dev checkout target, or
+ * null when there are none (keeps the workspace-write sandbox as narrow as
+ * possible while still covering the sanctioned source-edit targets). */
+function repairWorkspaceRoot() {
+	const dirs = linkTargetDirs(HOME);
+	if (dirs.length === 0) return null;
+	let common = dirs[0];
+	const parts = (p) => p.split(/[\\/]+/).filter(Boolean);
+	for (const dir of dirs.slice(1)) {
+		const a = parts(common);
+		const b = parts(dir);
+		const n = Math.min(a.length, b.length);
+		let i = 0;
+		while (i < n && a[i].toLowerCase() === b[i].toLowerCase()) i++;
+		if (i === 0) return null;
+		common = a.slice(0, i).join("\\");
+	}
+	return common.length >= 3 ? common : null;
 }
 
 /**

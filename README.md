@@ -22,6 +22,7 @@ A Web process that exits cannot restart itself. DSH provides stream idle watchdo
 - Repair scope extension: for dev checkouts referenced by `link:`/`file:` (directory) dependencies in the web profile, the repair agent may add junctions under their `node_modules` to resolve dependencies; added junctions are snapshot-tracked and removed on failed-rollback, while existing entries and source/config are never touched.
 - Repair status page: when a web launch fails and a repair begins, the watchdog serves a zero-dependency status page on the web port (default 3080) — "startup failed, repairing", live repair-agent progress and elapsed time; on success the page auto-redirects back to the web UI, on failure it shows the agent's conclusion.
 - The repair agent may make minimal source fixes inside the dev-checkout root that owns the failing plugin (e.g. add a missing variable declaration, fix an import, repair syntax); that root is content-snapshotted and rolled back on failure; file deletion is forbidden.
+- The repair agent's workspace root is automatically the common parent of all user dev-checkout targets (e.g. `D:\Code`); official `@deepseek-ai/*` link packages are excluded and never writable; writes are bounded by the snapshot audit.
 
 Both `enabled` and `autoRepair` require explicit opt-in; automatic repair defaults to **false**.
 

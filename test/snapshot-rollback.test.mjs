@@ -131,6 +131,23 @@ try {
 	check(readFileSync(join(dev, "client.js"), "utf8") === "export const c = 1;", "rollback restores the edited link-target source");
 	check(!existsSync(join(dev, "extra.js")), "rollback removes the added link-target file");
 	check(readFileSync(join(dev, "index.js"), "utf8") === "export const ok = 1;", "rollback restores the deleted link-target file");
+
+	/* ---- scenario 9: official @deepseek-ai link: targets are NOT dev
+	 * checkouts — excluded from link roots and source-edit scope ---- */
+	const officialLink = join(base, "official-link", "@deepseek-ai", "dsh-session");
+	mkdirSync(join(officialLink, "lib"), { recursive: true });
+	writeFileSync(join(officialLink, "package.json"), JSON.stringify({ name: "@deepseek-ai/dsh-session", version: "0.1.0-rc.6" }));
+	writeFileSync(join(officialLink, "lib", "index.js"), "export const official = 1;");
+	writeFileSync(join(HOME, "profiles", "web", "package.json"), JSON.stringify({
+		name: "dsh-profile-web",
+		dependencies: {
+			"@dsh-external/dsh-super-injector": "link:" + dev,
+			"@deepseek-ai/dsh-session": "link:" + officialLink
+		}
+	}));
+	const snap9 = takeSnapshot(HOME, "t9");
+	check(snap9.linkRoots.length === 1 && snap9.linkRoots[0] === dev, "official @deepseek-ai link targets are excluded from link roots");
+	check(!Object.keys(snap9.ledger).some((key) => key.includes("dsh-session")), "official link targets are not snapshotted");
 } finally {
 	rmSync(base, { recursive: true, force: true });
 }
