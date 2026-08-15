@@ -148,6 +148,17 @@ try {
 	const snap9 = takeSnapshot(HOME, "t9");
 	check(snap9.linkRoots.length === 1 && snap9.linkRoots[0] === dev, "official @deepseek-ai link targets are excluded from link roots");
 	check(!Object.keys(snap9.ledger).some((key) => key.includes("dsh-session")), "official link targets are not snapshotted");
+
+	/* ---- scenario 10: skipLiveDirs leaves live-written sessions/storages
+	 * out of the drift ledger (degraded repair while the web is UP) ---- */
+	mkdirSync(join(HOME, "sessions", "--live--"), { recursive: true });
+	writeFileSync(join(HOME, "sessions", "--live--", "s.jsonl.zstd"), "live\n");
+	mkdirSync(join(HOME, "storages"), { recursive: true });
+	writeFileSync(join(HOME, "storages", "live.json"), "{}");
+	const snap10 = takeSnapshot(HOME, "t10", { skipLiveDirs: true });
+	check(!Object.keys(snap10.ledger).some((key) => key.startsWith("sessions\\") || key.startsWith("storages\\")), "skipLiveDirs omits sessions/storages from the ledger");
+	const snap10b = takeSnapshot(HOME, "t10b");
+	check(Object.keys(snap10b.ledger).some((key) => key.startsWith("sessions\\")), "default snapshot still ledger-checks sessions");
 } finally {
 	rmSync(base, { recursive: true, force: true });
 }

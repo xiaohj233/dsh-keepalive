@@ -348,14 +348,14 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		out += d;
 		for (const line of d.toString().split(/\r?\n/)) {
 			const t = line.trim();
-			if (t) repairPage.push(`[agent] ${t}`);
+		if (t) pushRepairProgress(`[agent] ${t}`);
 		}
 	});
 	child.stderr.on("data", (d) => {
 		out += d;
 		for (const line of d.toString().split(/\r?\n/)) {
 			const t = line.trim();
-			if (t) repairPage.push(`[agent] ${t}`);
+		if (t) pushRepairProgress(`[agent] ${t}`);
 		}
 	});
 	const result = await new Promise((resolveDone) => {
@@ -419,6 +419,48 @@ const HOME = DSH_HOME;
 /* Repair status page: served on the web port while a repair runs. */
 const repairPage = createRepairPage({ host: HOST, port: PORT, log });
 
+/* Repair progress is ALSO persisted to a file the running web host reads, so
+ * the web UI can show "repairing" progress even in the degraded case (web UP,
+ * no repair status page bound — the web owns the port). */
+const REPAIR_PROGRESS_FILE = join(HOME, "keepalive-repair-progress.json");
+let repairPhase = "idle";
+let repairLines = [];
+let lastProgressPersist = 0;
+
+function persistRepairProgress(force) {
+	const now = Date.now();
+	if (!force && now - lastProgressPersist < 3000) return;
+	lastProgressPersist = now;
+	try {
+		writeFileSync(REPAIR_PROGRESS_FILE, JSON.stringify({ phase: repairPhase, lines: repairLines.slice(-60), updatedAt: now }));
+	} catch {
+		/* best-effort */
+	}
+}
+
+function pushRepairProgress(line) {
+	repairLines.push(line);
+	if (repairLines.length > 120) repairLines.shift();
+	repairPage.push(line);
+	persistRepairProgress(false);
+}
+
+function setRepairPhase(phase, extra = {}) {
+	repairPhase = phase;
+	repairPage.set(phase, extra);
+	persistRepairProgress(true);
+}
+
+function clearRepairProgress() {
+	repairPhase = "idle";
+	repairLines = [];
+	try {
+		rmSync(REPAIR_PROGRESS_FILE, { force: true });
+	} catch {
+		/* best-effort */
+	}
+}
+
 /* ------------------------------------------------------------------ */
 /* Snapshot / audit / rollback live in lib/snapshot-rollback.mjs —    */
 /* the enforcement layer that keeps repair agents from making things   */
@@ -430,6 +472,126 @@ async function repairRound(diagnostics, attemptId, modelOpts) {
 	const headless = await headlessRepair(diagnostics, attemptId, modelOpts);
 	if (headless.ok) return { ok: true, via: "headless", out: headless.out };
 	return { ok: false, error: headless.out || "headless repair failed" };
+}
+
+/**
+ * Shared repair gates: snapshot diff (out-of-bounds/link drift), syntax check
+ * of every changed .js/.mjs (including link-target source edits), and a
+ * --dump-config sanity probe. Returns { gatesPassed, diff }.
+ */
+function checkRepairGates(snap, result) {
+	setRepairPhase("verifying");
+	const diff = diffSnapshot(snap);
+	if (diff.outsideDrift.length > 0) {
+		log(`repair pass: OUT-OF-BOUNDS drift detected — ${diff.outsideDrift.join("; ")} — failing`);
+	}
+	if (diff.linkDrift.length > 0) {
+		log(`repair pass: link-target drift detected — ${diff.linkDrift.join("; ")} — failing`);
+	}
+	if (diff.linkAdded.length > 0) {
+		log(`repair pass: link-target junction(s) added — ${diff.linkAdded.join("; ")}`);
+	}
+	const badSyntax = [];
+	for (const rel of diff.changed) {
+		if (/\.(js|mjs)$/i.test(rel)) {
+			let abs;
+			if (rel.startsWith("profileplug\\")) {
+				const [pkgName, ...rest] = rel.slice("profileplug\\".length).split("\\");
+				abs = join(HOME, "profiles", "web", "node_modules", pkgName, ...rest);
+			} else if (rel.startsWith("plugins\\")) {
+				abs = join(HOME, "plugins", rel.slice("plugins\\".length));
+			} else if (rel.startsWith("linkroot\\")) {
+				const [idxStr, ...rest] = rel.slice("linkroot\\".length).split("\\");
+				abs = join((snap.linkRoots ?? [])[Number(idxStr)] ?? HOME, ...rest);
+			} else {
+				abs = join(HOME, rel);
+			}
+			const check = spawnSync(process.execPath, ["--check", abs], {
+				timeout: 30000,
+				windowsHide: true,
+				encoding: "utf8"
+			});
+			if (check.status !== 0) badSyntax.push(rel);
+		}
+	}
+	if (badSyntax.length > 0) log(`repair pass: syntax gate failed — ${badSyntax.join("; ")}`);
+	const dump = spawnSync(process.execPath, [BIN, "--profile", "web", "--dump-config"], {
+		timeout: 30000,
+		windowsHide: true,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"]
+	});
+	if (dump.status !== 0) log(`repair pass: config gate failed (--dump-config exit ${dump.status})`);
+	const gatesPassed = result.ok && diff.outsideDrift.length === 0 && diff.linkDrift.length === 0 && badSyntax.length === 0 && dump.status === 0;
+	return { gatesPassed, diff };
+}
+
+/**
+ * Degraded repair for a front-end plugin failure reported by the keepalive
+ * client while the web process is UP (a plugin failed to load in the
+ * browser — the watchdog would never notice from process liveness alone).
+ * Runs the same snapshot-audited headless repair, relaunches web so the
+ * plugin reloads, and clears the report on success. The repair status page
+ * is intentionally NOT started: the web UI is still serving, and binding
+ * the port it owns would just EADDRINUSE.
+ */
+async function runPluginFailureRepair(pf) {
+	log(`plugin failure reported — starting degraded repair: ${String(pf.error).slice(0, 120)}`);
+	writeState({ status: "repairing", repairCount: 1, lastError: "plugin failure reported; repair in progress" });
+	setRepairPhase("detected");
+	restoreResumeStateBytes(readResumeStateBytes());
+	const attemptId = new Date().toISOString().replace(/[:.]/g, "-");
+	/* The web is UP during a degraded repair, so its sessions/storages keep
+	 * being written; those live dirs must not be drift-ledgered here (a
+	 * launch-failure repair, with the web down, still checks them). */
+	const snap = takeSnapshot(HOME, attemptId, { skipLiveDirs: true });
+	log(`plugin repair pass: snapshot taken (${Object.keys(snap.ledger).length} files)`);
+	setRepairPhase("snapshot");
+	const diagnostics = [
+		`--- 前端插件加载失败上报（web 进程存活）---`,
+		`插件: ${pf.plugin || "(unknown)"}`,
+		`错误: ${pf.error}`,
+		`上报时间: ${pf.at ?? "(unknown)"}`,
+		`注意：web 进程仍然存活，本次故障只在前端（浏览器）加载该插件时发生；下方 web 日志中的历史错误可能已经修复，请以上述上报错误为准，聚焦定位。`,
+		`--- 最近 web 日志 ---`,
+		tail(WEB_LOG, 30),
+		`--- keepalive 状态 ---`,
+		JSON.stringify(readState(), null, 2)
+	].join("\n");
+	const modelCfg = effectiveConfig();
+	const modelOpts = { provider: modelCfg.repairProvider ?? "", model: modelCfg.repairModel ?? "" };
+	let result;
+	if (modelCfg.autoRepair) {
+		log(`plugin repair pass: autoRepair on (provider="${modelOpts.provider}" model="${modelOpts.model}")`);
+		setRepairPhase("agent-running");
+		result = await repairRound(diagnostics, attemptId, modelOpts);
+	} else {
+		log("plugin repair pass: autoRepair disabled — skipping repair agent");
+		setRepairPhase("verifying");
+		result = { ok: false, error: "autoRepair disabled" };
+	}
+	const { gatesPassed } = checkRepairGates(snap, result);
+	if (gatesPassed) {
+		log(`plugin repair pass ok (${result.via}) — relaunching web to reload plugins`);
+		launchWeb();
+		if (await waitAlive(modelCfg.bootWaitMs)) {
+			const fresh = portPid();
+			writeState({ status: "watching", pluginFailure: void 0, lastRestoredAt: new Date().toISOString(), repairCount: 0, ...fresh !== void 0 ? { webPid: fresh } : {} });
+			setRepairPhase("succeeded");
+			clearRepairProgress();
+			log("plugin repair ok — web relaunched, plugin failure cleared");
+			return true;
+		}
+		log("plugin repair applied but final relaunch still did not come up");
+	} else {
+		log(`plugin repair failed: ${result.error ?? result.out}`);
+	}
+	const rolled = rollbackSnapshot(snap);
+	log(`plugin repair rolled back:\n${rolled}`);
+	setRepairPhase("failed");
+	clearRepairProgress();
+	writeState({ status: "failed", pluginFailure: void 0, lastError: "plugin repair failed (see keepalive.log) — report cleared, no further automatic attempts", repairCount: 1 });
+	return false;
 }
 
 /**
@@ -523,6 +685,9 @@ async function main() {
 	}
 	claim();
 	applyInstalledPatches();
+	/* A crashed watchdog can leave a stale repair-progress file behind, which
+	 * the web host would keep serving as "repairing" — drop it on start. */
+	clearRepairProgress();
 	let state = readState();
 	let checkInterval = Number(state.checkIntervalMs) || 5000;
 	let bootWait = Number(state.bootWaitMs) || 25000;
@@ -556,6 +721,21 @@ async function main() {
 		}
 		if (await webAlive(2000)) {
 			silentStreak = 0;
+			/* The web is UP, but a front-end plugin may have failed to load —
+			 * the keepalive client reports that here, so the watchdog can
+			 * repair it even though process liveness looks fine. */
+			const pf = state.pluginFailure;
+			if (!gaveUp && pf !== void 0 && pf !== null && typeof pf.error === "string" && pf.error.length > 0) {
+				const repaired = await runPluginFailureRepair(pf);
+				state = readState();
+				if (repaired) {
+					silentStreak = 0;
+					gaveUp = false;
+					continue;
+				}
+				gaveUp = true;
+				continue;
+			}
 			writeState({ status: "watching" });
 			continue;
 		}
@@ -617,10 +797,10 @@ async function main() {
 		writeState({ status: "repairing", repairCount: 1, lastError: "web did not come up after relaunch" });
 		restoreResumeStateBytes(resumeBytes);
 		repairPage.start();
-		repairPage.set("detected");
+		setRepairPhase("detected");
 		const snap = takeSnapshot(HOME, attemptId);
 		log(`repair pass: snapshot taken (${Object.keys(snap.ledger).length} files)`);
-		repairPage.set("snapshot");
+		setRepairPhase("snapshot");
 		const diagnostics = [
 			`--- 本次真实 web 启动的完整输出 ---`,
 			attemptOutput(attempt.logStart),
@@ -638,68 +818,26 @@ async function main() {
 		let result;
 		if (autoRepair) {
 			log(`repair pass: autoRepair on (provider="${modelOpts.provider}" model="${modelOpts.model}")`);
-			repairPage.set("agent-running");
+			setRepairPhase("agent-running");
 			result = await repairRound(diagnostics, attemptId, modelOpts);
 		} else {
 			log("repair pass: autoRepair disabled — skipping repair agent");
-			repairPage.set("verifying");
+			setRepairPhase("verifying");
 			result = { ok: false, error: "autoRepair disabled" };
 		}
 
 		/* gates: changed plugin files must parse; nothing outside plugins may change */
-		repairPage.set("verifying");
-		const diff = diffSnapshot(snap);
-		if (diff.outsideDrift.length > 0) {
-			log(`repair pass: OUT-OF-BOUNDS drift detected — ${diff.outsideDrift.join("; ")} — failing`);
-		}
-		if (diff.linkDrift.length > 0) {
-			log(`repair pass: link-target drift detected — ${diff.linkDrift.join("; ")} — failing`);
-		}
-		if (diff.linkAdded.length > 0) {
-			log(`repair pass: link-target junction(s) added — ${diff.linkAdded.join("; ")}`);
-		}
-		const badSyntax = [];
-		for (const rel of diff.changed) {
-			if (/\.(js|mjs)$/i.test(rel)) {
-				let abs;
-				if (rel.startsWith("profileplug\\")) {
-					const [pkgName, ...rest] = rel.slice("profileplug\\".length).split("\\");
-					abs = join(HOME, "profiles", "web", "node_modules", pkgName, ...rest);
-				} else if (rel.startsWith("plugins\\")) {
-					abs = join(HOME, "plugins", rel.slice("plugins\\".length));
-				} else if (rel.startsWith("linkroot\\")) {
-					const [idxStr, ...rest] = rel.slice("linkroot\\".length).split("\\");
-					abs = join((snap.linkRoots ?? [])[Number(idxStr)] ?? HOME, ...rest);
-				} else {
-					abs = join(HOME, rel);
-				}
-				const check = spawnSync(process.execPath, ["--check", abs], {
-					timeout: 30000,
-					windowsHide: true,
-					encoding: "utf8"
-				});
-				if (check.status !== 0) badSyntax.push(rel);
-			}
-		}
-		if (badSyntax.length > 0) log(`repair pass: syntax gate failed — ${badSyntax.join("; ")}`);
-		const dump = spawnSync(process.execPath, [BIN, "--profile", "web", "--dump-config"], {
-			timeout: 30000,
-			windowsHide: true,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"]
-		});
-		if (dump.status !== 0) log(`repair pass: config gate failed (--dump-config exit ${dump.status})`);
-
-		const gatesPassed = result.ok && diff.outsideDrift.length === 0 && diff.linkDrift.length === 0 && badSyntax.length === 0 && dump.status === 0;
+		const { gatesPassed } = checkRepairGates(snap, result);
 		if (gatesPassed) {
 			log(`repair pass ok (${result.via}) — final single relaunch`);
-			repairPage.set("relaunching");
+			setRepairPhase("relaunching");
 			repairPage.stop(); // release the web port before the final launch
 			launchWeb();
 			if (await waitAlive(bootWait)) {
 				const fresh = portPid();
 				writeState({ status: "watching", lastRestoredAt: new Date().toISOString(), repairCount: 0, ...fresh !== void 0 ? { webPid: fresh } : {} });
-				repairPage.set("succeeded");
+				setRepairPhase("succeeded");
+				clearRepairProgress();
 				log("web is back up after repair + final relaunch");
 				continue;
 			}
@@ -713,7 +851,8 @@ async function main() {
 		const rolled = rollbackSnapshot(snap);
 		log(`repair pass rolled back:\n${rolled}`);
 		if (!repairPage.active()) repairPage.start();
-		repairPage.set("failed", { result: { ok: false, error: String(result.error ?? result.out ?? "").slice(0, 2000) } });
+		setRepairPhase("failed", { result: { ok: false, error: String(result.error ?? result.out ?? "").slice(0, 2000) } });
+		clearRepairProgress();
 		writeState({
 			status: "failed",
 			lastError: "web down; one repair pass failed (see keepalive.log) — no further automatic attempts",

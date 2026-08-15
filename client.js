@@ -684,6 +684,90 @@ window.__ModuleLoader__.load({
 				inject: () => controller.inject()
 			}, KeepaliveCard));
 
+			/* 前端插件失败上报：其他 client 插件懒加载失败（如模块顶层抛
+			 * "raf is not defined"）不会让 web 进程死掉，watchdog 从进程存活
+			 * 上无感知。这里监听 window error / unhandledrejection，把带插件
+			 * 特征的错误上报给 keepalive host，由 watchdog 触发降级修复。
+			 * 按签名节流：同一错误 5 分钟内只报一次。 */
+			ctx.effect(() => {
+				if (typeof window === "undefined") return undefined;
+				var last = 0;
+				var COOLDOWN = 300000;
+				function matches(msg) {
+					return /plugin|loader|Failed to load|is not defined|Cannot find package|Unexpected|SyntaxError|TypeError/.test(msg);
+				}
+				function report(msg) {
+					var now = Date.now();
+					if (now - last < COOLDOWN) return;
+					last = now;
+					fetch("/api/keepalive/report-plugin-failure", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ plugin: "", error: String(msg).slice(0, 2000) })
+					}).catch(function () {});
+				}
+				function onError(e) {
+					var msg = (e && e.error && (e.error.message || String(e.error))) || (e && e.message) || "";
+					if (msg && matches(msg)) report(msg);
+				}
+				function onRejection(e) {
+					var r = e && e.reason;
+					var msg = (r && r.message) || String(r || "");
+					if (msg && matches(msg)) report(msg);
+				}
+				window.addEventListener("error", onError);
+				window.addEventListener("unhandledrejection", onRejection);
+				return function () {
+					window.removeEventListener("error", onError);
+					window.removeEventListener("unhandledrejection", onRejection);
+				};
+			}, "dsh-keepalive: plugin failure reporter");
+
+			/* 全局修复进度浮层：不依赖设置卡片，任何页面都能看到 watchdog
+			 * 是否在修复（阶段 + agent 进度行 + 失败原因）。轮询 status。 */
+			ctx.effect(() => {
+				if (typeof document === "undefined") return undefined;
+				var el = document.createElement("div");
+				el.id = "dsh-keepalive-repair-banner";
+				el.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483000;max-width:380px;background:#14202e;border:1px solid #2a4a6b;border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;color:#9fd4ff;box-shadow:0 4px 20px rgba(0,0,0,.4);display:none;font-family:'Microsoft YaHei',system-ui,sans-serif";
+				document.body.appendChild(el);
+				var PH = { detected: "检测故障", snapshot: "快照与审计", "agent-running": "修复代理执行中", verifying: "验证修复", relaunching: "正在重启服务", succeeded: "修复成功", failed: "修复失败" };
+				function tick() {
+					fetch("/api/keepalive/status", { cache: "no-store" })
+						.then(function (res) { return res.ok ? res.json() : null; })
+						.then(function (payload) {
+							if (payload === null) return;
+							var prog = payload.repairProgress;
+							if (payload.status === "repairing" && prog !== null && prog.phase !== "idle") {
+								var zh = PH[prog.phase] || prog.phase;
+								var lines = (prog.lines || []).slice(-3).map(function (l) {
+									return l.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+								}).join("<br>");
+								el.style.display = "block";
+								el.style.background = "#14202e";
+								el.style.borderColor = "#2a4a6b";
+								el.style.color = "#9fd4ff";
+								el.innerHTML = "<div style='font-weight:600;color:#ffb454;margin-bottom:4px'>🔧 正在修复：" + zh + "</div>" + (lines ? "<div style='white-space:pre-wrap'>" + lines + "</div>" : "<div>修复代理运行中，等待阶段汇报…</div>");
+							} else if (payload.status === "failed" && payload.lastError) {
+								el.style.display = "block";
+								el.style.background = "#2a1418";
+								el.style.borderColor = "#5a2830";
+								el.style.color = "#ff9a9a";
+								el.innerHTML = "<div style='font-weight:600'>✗ 修复失败：" + String(payload.lastError).replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</div>";
+							} else {
+								el.style.display = "none";
+							}
+						})
+						.catch(function () {});
+				}
+				tick();
+				var timer = setInterval(tick, 3000);
+				return function () {
+					clearInterval(timer);
+					if (el.parentNode) el.parentNode.removeChild(el);
+				};
+			}, "dsh-keepalive: global repair progress banner");
+
 			/* 自动刷新：watchdog 重启 web 后，浏览器页面自动 reload，避免停留在
 			 * 已死进程的页面上。轮询 /api/keepalive/status：webPid 变化 → reload；
 			 * 连续 3 次请求失败（旧进程已退出）→ reload。 */
