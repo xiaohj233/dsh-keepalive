@@ -115,6 +115,22 @@ try {
 	writeFileSync(join(HOME, "keepalive.json"), JSON.stringify({ ...kstate, enabled: false }));
 	const d7b = diffSnapshot(snap7);
 	check(d7b.outsideDrift.includes("keepalive.json"), "a changed keepalive static field is still drift");
+
+	/* ---- scenario 8: link-target root source edits are snapshot-tracked
+	 * and rollback-capable (the sanctioned repair action since v0.2.8) ---- */
+	writeFileSync(join(dev, "client.js"), "export const c = 1;");
+	writeFileSync(join(dev, "index.js"), "export const ok = 1;");
+	const snap8 = takeSnapshot(HOME, "t8");
+	writeFileSync(join(dev, "client.js"), "let raf = 0; export const c = 2;"); // sanctioned edit
+	writeFileSync(join(dev, "extra.js"), "export const e = 1;"); // sanctioned add
+	const d8 = diffSnapshot(snap8);
+	check(d8.changed.includes("linkroot\\0\\client.js") && d8.changed.includes("linkroot\\0\\extra.js"), "link-target source edits are tracked as sanctioned changes");
+	check(d8.outsideDrift.length === 0 && d8.linkDrift.length === 0, "sanctioned link-target source edits are not drift");
+	rmSync(join(dev, "index.js"), { force: true }); // deletion is rolled back too
+	const roll8 = restoreSnapshot(snap8);
+	check(readFileSync(join(dev, "client.js"), "utf8") === "export const c = 1;", "rollback restores the edited link-target source");
+	check(!existsSync(join(dev, "extra.js")), "rollback removes the added link-target file");
+	check(readFileSync(join(dev, "index.js"), "utf8") === "export const ok = 1;", "rollback restores the deleted link-target file");
 } finally {
 	rmSync(base, { recursive: true, force: true });
 }

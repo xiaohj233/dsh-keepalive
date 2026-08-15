@@ -45,6 +45,7 @@ import http from "node:http";
 import { parseKeepaliveConfig, parseLlmConfig, renderRepairRuntimeSettings } from "./lib/llm-config.mjs";
 import { ensureInstalledPatches, restoreInstalledPatches, resolveDshRootFromBin } from "./lib/installed-patches.mjs";
 import { takeSnapshot, diffSnapshot, restoreSnapshot as rollbackSnapshot } from "./lib/snapshot-rollback.mjs";
+import { createRepairPage } from "./lib/repair-page.mjs";
 
 const BIN = process.argv[2];
 const DSH_HOME = process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? "C:\\Users\\", ".dsh");
@@ -320,12 +321,13 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		``,
 		`要求：`,
 		`1. 先阅读完整错误、相关日志、DSH 官方源码与报错插件的真实文件结构，自行确定根因后再做最小修改；不要凭猜测重写 Config、inject、patch、bundle 或目录结构。`,
-		`2. 只应修改用户插件文件：(a) ~/.dsh/plugins 目录，(b) ~/.dsh/profiles/web/node_modules 下以 dsh- 开头的用户插件包（如 dsh-resume、dsh-keepalive、dsh-tavily-search-provider 等，含其 cordis.patch.yml、package.json 等包内文件），(c) 对 web profile package.json 中以 link: 或 file:（目录）声明指向的开发目录，允许在其 node_modules 下新建 junction/symlink 补齐依赖解析（仅限新增条目，用于把官方安装里的 @deepseek-ai/* 等包链接进来；禁止修改或删除该 node_modules 下任何现有条目，禁止改动该开发目录中的源码、配置或任何非 node_modules 文件）。禁止修改 node_modules/@deepseek-ai/（官方主框架包）、settings.yaml、profile 配置、session、storage、keepalive 状态或 DSH 官方安装；修改会被快照审计，越界或语法错误会被回滚。`,
+		`2. 只应修改用户插件文件：(a) ~/.dsh/plugins 目录，(b) ~/.dsh/profiles/web/node_modules 下以 dsh- 开头的用户插件包（如 dsh-resume、dsh-keepalive、dsh-tavily-search-provider 等，含其 cordis.patch.yml、package.json 等包内文件），(c) 对 web profile package.json 中以 link: 或 file:（目录）声明指向的开发目录：允许在其 node_modules 下新建 junction/symlink 补齐依赖解析（仅限新增条目，用于把官方安装里的 @deepseek-ai/* 等包链接进来），并且允许对【本次报错插件所属的那个开发目录】内的源码做最小修复（例如补变量声明、修正 import 路径、修复语法；禁止删除任何文件，禁止改动与本次故障无关的目录或文件）。禁止修改 node_modules/@deepseek-ai/（官方主框架包）、settings.yaml、profile 配置、session、storage、keepalive 状态或 DSH 官方安装；修改会被快照审计，越界、语法错误或删除文件会被回滚。`,
 		`3. 不要删除、移动、重命名文件；不要卸载、清理、重置。`,
 		`4. 如果根因不在用户插件，停止修改并用中文说明根因和建议。`,
 		`5. 修复后对每个修改过的 .js/.mjs 执行 node --check 自检。`,
 		`6. 输出简洁中文总结：根因、修改的文件、验证结果。`,
-		`7. 不要启动或重启 web 服务器（外部 watchdog 负责验证）。`
+		`7. 不要启动或重启 web 服务器（外部 watchdog 负责验证）。`,
+		`8. 进度汇报：每完成一个重要步骤（分析根因、定位文件、实施修改、自检、总结），输出一行以 [进度] 开头的中文说明，例如：[进度] 已定位根因：缺少 raf 变量声明。这些行会实时展示给用户。`
 	].join("\n");
 	log("headless repair task started (isolated runtime)");
 	const child = spawn(process.execPath, [BIN, "--profile", "headless", task], {
@@ -337,9 +339,17 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 	let out = "";
 	child.stdout.on("data", (d) => {
 		out += d;
+		for (const line of d.toString().split(/\r?\n/)) {
+			const t = line.trim();
+			if (t) repairPage.push(`[agent] ${t}`);
+		}
 	});
 	child.stderr.on("data", (d) => {
 		out += d;
+		for (const line of d.toString().split(/\r?\n/)) {
+			const t = line.trim();
+			if (t) repairPage.push(`[agent] ${t}`);
+		}
 	});
 	const result = await new Promise((resolveDone) => {
 		let timedOut = false;
@@ -378,6 +388,9 @@ function readSettings() {
 }
 
 const HOME = DSH_HOME;
+
+/* Repair status page: served on the web port while a repair runs. */
+const repairPage = createRepairPage({ host: HOST, port: PORT, log });
 
 /* ------------------------------------------------------------------ */
 /* Snapshot / audit / rollback live in lib/snapshot-rollback.mjs —    */
@@ -576,8 +589,11 @@ async function main() {
 		// ---- relaunch failed: one repair pass, then exactly one final launch ----
 		writeState({ status: "repairing", repairCount: 1, lastError: "web did not come up after relaunch" });
 		restoreResumeStateBytes(resumeBytes);
+		repairPage.start();
+		repairPage.set("detected");
 		const snap = takeSnapshot(HOME, attemptId);
 		log(`repair pass: snapshot taken (${Object.keys(snap.ledger).length} files)`);
+		repairPage.set("snapshot");
 		const diagnostics = [
 			`--- 本次真实 web 启动的完整输出 ---`,
 			attemptOutput(attempt.logStart),
@@ -595,13 +611,16 @@ async function main() {
 		let result;
 		if (autoRepair) {
 			log(`repair pass: autoRepair on (provider="${modelOpts.provider}" model="${modelOpts.model}")`);
+			repairPage.set("agent-running");
 			result = await repairRound(diagnostics, attemptId, modelOpts);
 		} else {
 			log("repair pass: autoRepair disabled — skipping repair agent");
+			repairPage.set("verifying");
 			result = { ok: false, error: "autoRepair disabled" };
 		}
 
 		/* gates: changed plugin files must parse; nothing outside plugins may change */
+		repairPage.set("verifying");
 		const diff = diffSnapshot(snap);
 		if (diff.outsideDrift.length > 0) {
 			log(`repair pass: OUT-OF-BOUNDS drift detected — ${diff.outsideDrift.join("; ")} — failing`);
@@ -621,6 +640,9 @@ async function main() {
 					abs = join(HOME, "profiles", "web", "node_modules", pkgName, ...rest);
 				} else if (rel.startsWith("plugins\\")) {
 					abs = join(HOME, "plugins", rel.slice("plugins\\".length));
+				} else if (rel.startsWith("linkroot\\")) {
+					const [idxStr, ...rest] = rel.slice("linkroot\\".length).split("\\");
+					abs = join((snap.linkRoots ?? [])[Number(idxStr)] ?? HOME, ...rest);
 				} else {
 					abs = join(HOME, rel);
 				}
@@ -644,14 +666,18 @@ async function main() {
 		const gatesPassed = result.ok && diff.outsideDrift.length === 0 && diff.linkDrift.length === 0 && badSyntax.length === 0 && dump.status === 0;
 		if (gatesPassed) {
 			log(`repair pass ok (${result.via}) — final single relaunch`);
+			repairPage.set("relaunching");
+			repairPage.stop(); // release the web port before the final launch
 			launchWeb();
 			if (await waitAlive(bootWait)) {
 				const fresh = portPid();
 				writeState({ status: "watching", lastRestoredAt: new Date().toISOString(), repairCount: 0, ...fresh !== void 0 ? { webPid: fresh } : {} });
+				repairPage.set("succeeded");
 				log("web is back up after repair + final relaunch");
 				continue;
 			}
 			log("repair applied but final relaunch still did not come up");
+			repairPage.start(); // bring the status page back for the failure
 		} else {
 			log(`repair pass failed: ${result.error ?? result.out}`);
 		}
@@ -659,6 +685,8 @@ async function main() {
 		/* failed repair: roll the plugin tree back, keep resume state intact, stop. */
 		const rolled = rollbackSnapshot(snap);
 		log(`repair pass rolled back:\n${rolled}`);
+		if (!repairPage.active()) repairPage.start();
+		repairPage.set("failed", { result: { ok: false, error: String(result.error ?? result.out ?? "").slice(0, 2000) } });
 		writeState({
 			status: "failed",
 			lastError: "web down; one repair pass failed (see keepalive.log) — no further automatic attempts",

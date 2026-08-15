@@ -12,6 +12,7 @@ const tests = [
 	"test/llm-config.test.mjs",
 	"test/installed-patches.test.mjs",
 	"test/snapshot-rollback.test.mjs",
+	"test/repair-page.test.mjs",
 	"test/uninstall.test.mjs",
 	"test/watchdog-unpatch.test.mjs"
 ];
