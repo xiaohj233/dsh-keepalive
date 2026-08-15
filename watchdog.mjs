@@ -570,8 +570,18 @@ async function runPluginFailureRepair(pf) {
 		setRepairPhase("verifying");
 		result = { ok: false, error: "autoRepair disabled" };
 	}
-	const { gatesPassed } = checkRepairGates(snap, result);
+	const { gatesPassed, diff } = checkRepairGates(snap, result);
 	if (gatesPassed) {
+		const noChanges = diff.changed.length === 0 && diff.linkAdded.length === 0;
+		if (noChanges) {
+			/* The agent made no changes — the report was either a false
+			 * positive or already self-healed. Do NOT relaunch the web and
+			 * interrupt the user; just clear the report. */
+			log("plugin repair pass ok but no changes — clearing report without relaunch");
+			writeState({ status: "watching", pluginFailure: void 0, repairCount: 0 });
+			clearRepairProgress();
+			return true;
+		}
 		log(`plugin repair pass ok (${result.via}) — relaunching web to reload plugins`);
 		launchWeb();
 		if (await waitAlive(modelCfg.bootWaitMs)) {

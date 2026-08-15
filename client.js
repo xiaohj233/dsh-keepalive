@@ -684,18 +684,17 @@ window.__ModuleLoader__.load({
 				inject: () => controller.inject()
 			}, KeepaliveCard));
 
-			/* 前端插件失败上报：其他 client 插件懒加载失败（如模块顶层抛
-			 * "raf is not defined"）不会让 web 进程死掉，watchdog 从进程存活
-			 * 上无感知。这里监听 window error / unhandledrejection，把带插件
-			 * 特征的错误上报给 keepalive host，由 watchdog 触发降级修复。
+			/* 前端插件失败上报：只上报“插件自身失败”，避免捕风捉影。
+			 * - 精确通道：slots.onEntryError —— dsh 官方的插件贡献崩溃事件，
+			 *   只在该插件的 slot entry 崩溃时触发（带 slot key 与错误）。
+			 * - 兜底：unhandledrejection 仅当消息是明确的动态 import/模块加载
+			 *   失败（浏览器对 import() 失败的包装消息）。
+			 * 不监听 window 'error'：任意页面脚本错误都会触发（例如语法错误
+			 * "Unexpected token ')'"），会把正常使用中的误报当成插件故障。
 			 * 按签名节流：同一错误 5 分钟内只报一次。 */
 			ctx.effect(() => {
-				if (typeof window === "undefined") return undefined;
 				var last = 0;
 				var COOLDOWN = 300000;
-				function matches(msg) {
-					return /plugin|loader|Failed to load|is not defined|Cannot find package|Unexpected|SyntaxError|TypeError/.test(msg);
-				}
 				function report(msg) {
 					var now = Date.now();
 					if (now - last < COOLDOWN) return;
@@ -706,20 +705,25 @@ window.__ModuleLoader__.load({
 						body: JSON.stringify({ plugin: "", error: String(msg).slice(0, 2000) })
 					}).catch(function () {});
 				}
-				function onError(e) {
-					var msg = (e && e.error && (e.error.message || String(e.error))) || (e && e.message) || "";
-					if (msg && matches(msg)) report(msg);
+				var disposers = [];
+				if (ctx.slots && typeof ctx.slots.onEntryError === "function") {
+					disposers.push(ctx.slots.onEntryError(function (key, entry, error) {
+						var msg = error && error.message ? error.message : String(error || "");
+						if (msg) report("[" + String(key) + "] " + msg);
+					}));
 				}
-				function onRejection(e) {
-					var r = e && e.reason;
-					var msg = (r && r.message) || String(r || "");
-					if (msg && matches(msg)) report(msg);
+				if (typeof window !== "undefined") {
+					function onRejection(e) {
+						var r = e && e.reason;
+						var msg = (r && r.message) ? r.message : String(r || "");
+						/* 仅限浏览器动态 import 失败的典型包装消息 */
+						if (/Failed to fetch dynamically imported module|error loading dynamically imported module|Failed to load|Cannot find package|Importing a module script failed/i.test(msg)) report(msg);
+					}
+					window.addEventListener("unhandledrejection", onRejection);
+					disposers.push(function () { window.removeEventListener("unhandledrejection", onRejection); });
 				}
-				window.addEventListener("error", onError);
-				window.addEventListener("unhandledrejection", onRejection);
 				return function () {
-					window.removeEventListener("error", onError);
-					window.removeEventListener("unhandledrejection", onRejection);
+					for (var i = 0; i < disposers.length; i += 1) disposers[i]();
 				};
 			}, "dsh-keepalive: plugin failure reporter");
 
