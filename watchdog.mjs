@@ -38,7 +38,7 @@
  *        node watchdog.mjs --unpatch <bin-js-path>
  */
 
-import { readFileSync, writeFileSync, renameSync, appendFileSync, mkdirSync, openSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, appendFileSync, mkdirSync, openSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import http from "node:http";
@@ -282,6 +282,23 @@ function prepareRepairRuntime(attemptId, opts = {}) {
 			baseURL: prov.baseURL ?? ""
 		});
 		writeFileSync(join(dir, "settings.yaml"), settings);
+		/* The headless agent must authenticate like the real web profile does:
+		   copy the DSH credential file into the isolated runtime. Values stay
+		   inside the temporary repair home and are removed when the repair
+		   finishes (see headlessRepair). A missing credential file is not
+		   fatal here — the agent's own MISSING_CREDENTIAL output then names
+		   the gap instead of a silent generic failure. */
+		try {
+			const credentialsFile = join(DSH_HOME, ".credentials.yaml");
+			if (existsSync(credentialsFile)) {
+				copyFileSync(credentialsFile, join(dir, ".credentials.yaml"));
+				log("repair runtime: credentials copied for headless agent");
+			} else {
+				log("repair runtime: no credential file to copy — agent may report MISSING_CREDENTIAL");
+			}
+		} catch (error) {
+			log(`repair runtime: credentials copy failed (agent may report MISSING_CREDENTIAL): ${String(error)}`);
+		}
 	} catch (error) {
 		log(`repair runtime prepare failed: ${String(error)}`);
 		return null;
@@ -334,6 +351,14 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 			resolveDone({ code, out });
 		});
 	});
+	/* Never leave the user's credentials behind in the isolated runtime. The
+	   directory itself is kept for post-mortem diagnostics; only the copied
+	   credential file is removed. */
+	try {
+		rmSync(join(repairHome, ".credentials.yaml"), { force: true });
+	} catch {
+		/* best-effort */
+	}
 	log(`headless repair finished code=${result.code} (${result.out.length} chars)`);
 	return { ok: result.code === 0, out: result.out.slice(-4000) };
 }
