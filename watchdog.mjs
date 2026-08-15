@@ -320,7 +320,7 @@ async function headlessRepair(diagnostics, attemptId, modelOpts) {
 		``,
 		`要求：`,
 		`1. 先阅读完整错误、相关日志、DSH 官方源码与报错插件的真实文件结构，自行确定根因后再做最小修改；不要凭猜测重写 Config、inject、patch、bundle 或目录结构。`,
-		`2. 只应修改用户插件文件：(a) ~/.dsh/plugins 目录，(b) ~/.dsh/profiles/web/node_modules 下以 dsh- 开头的用户插件包（如 dsh-resume、dsh-keepalive、dsh-tavily-search-provider 等，含其 cordis.patch.yml、package.json 等包内文件）。禁止修改 node_modules/@deepseek-ai/（官方主框架包）、settings.yaml、profile 配置、session、storage、keepalive 状态或 DSH 官方安装；修改会被快照审计，越界或语法错误会被回滚。`,
+		`2. 只应修改用户插件文件：(a) ~/.dsh/plugins 目录，(b) ~/.dsh/profiles/web/node_modules 下以 dsh- 开头的用户插件包（如 dsh-resume、dsh-keepalive、dsh-tavily-search-provider 等，含其 cordis.patch.yml、package.json 等包内文件），(c) 对 web profile package.json 中以 link: 或 file:（目录）声明指向的开发目录，允许在其 node_modules 下新建 junction/symlink 补齐依赖解析（仅限新增条目，用于把官方安装里的 @deepseek-ai/* 等包链接进来；禁止修改或删除该 node_modules 下任何现有条目，禁止改动该开发目录中的源码、配置或任何非 node_modules 文件）。禁止修改 node_modules/@deepseek-ai/（官方主框架包）、settings.yaml、profile 配置、session、storage、keepalive 状态或 DSH 官方安装；修改会被快照审计，越界或语法错误会被回滚。`,
 		`3. 不要删除、移动、重命名文件；不要卸载、清理、重置。`,
 		`4. 如果根因不在用户插件，停止修改并用中文说明根因和建议。`,
 		`5. 修复后对每个修改过的 .js/.mjs 执行 node --check 自检。`,
@@ -606,6 +606,12 @@ async function main() {
 		if (diff.outsideDrift.length > 0) {
 			log(`repair pass: OUT-OF-BOUNDS drift detected — ${diff.outsideDrift.join("; ")} — failing`);
 		}
+		if (diff.linkDrift.length > 0) {
+			log(`repair pass: link-target drift detected — ${diff.linkDrift.join("; ")} — failing`);
+		}
+		if (diff.linkAdded.length > 0) {
+			log(`repair pass: link-target junction(s) added — ${diff.linkAdded.join("; ")}`);
+		}
 		const badSyntax = [];
 		for (const rel of diff.changed) {
 			if (/\.(js|mjs)$/i.test(rel)) {
@@ -635,7 +641,7 @@ async function main() {
 		});
 		if (dump.status !== 0) log(`repair pass: config gate failed (--dump-config exit ${dump.status})`);
 
-		const gatesPassed = result.ok && diff.outsideDrift.length === 0 && badSyntax.length === 0 && dump.status === 0;
+		const gatesPassed = result.ok && diff.outsideDrift.length === 0 && diff.linkDrift.length === 0 && badSyntax.length === 0 && dump.status === 0;
 		if (gatesPassed) {
 			log(`repair pass ok (${result.via}) — final single relaunch`);
 			launchWeb();

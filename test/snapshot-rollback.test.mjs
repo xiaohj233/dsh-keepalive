@@ -4,7 +4,7 @@
  * Uses a temporary HOME mirror; never touches the real ~/.dsh.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { takeSnapshot, diffSnapshot, restoreSnapshot } from "../lib/snapshot-rollback.mjs";
@@ -77,6 +77,44 @@ try {
 	writeFileSync(join(HOME, "keepalive.json"), JSON.stringify({ enabled: false }));
 	const d4 = diffSnapshot(snap4);
 	check(d4.outsideDrift.includes("keepalive.json"), "keepalive.json drift is detected outside plugins");
+
+	/* ---- scenario 6: link-target node_modules junctions are the sanctioned
+	 * repair action; deleting or retargeting existing entries is drift ---- */
+	const dev = join(base, "dev", "injector");
+	const devNm = join(dev, "node_modules");
+	mkdirSync(join(devNm, "existing-pkg"), { recursive: true });
+	mkdirSync(join(dev, "lib"), { recursive: true });
+	const official = join(base, "official", "dsh-tools");
+	mkdirSync(official, { recursive: true });
+	writeFileSync(join(HOME, "profiles", "web", "package.json"), JSON.stringify({
+		name: "dsh-profile-web",
+		dependencies: { "@dsh-external/dsh-super-injector": "link:" + dev }
+	}));
+	const snap6 = takeSnapshot(HOME, "t6");
+	mkdirSync(join(devNm, "@deepseek-ai"), { recursive: true });
+	symlinkSync(official, join(devNm, "@deepseek-ai", "dsh-tools"), "junction");
+	const d6 = diffSnapshot(snap6);
+	check(d6.linkAdded.some((key) => key.endsWith("dsh-tools")), "adding a dependency junction in a link target is the sanctioned repair action");
+	check(d6.linkDrift.length === 0 && d6.outsideDrift.length === 0, "sanctioned junctions are neither link drift nor outside drift");
+	rmSync(join(devNm, "existing-pkg"), { recursive: true, force: true });
+	const d6b = diffSnapshot(snap6);
+	check(d6b.linkDrift.some((key) => key.includes("existing-pkg")), "deleting an existing link-target entry is drift");
+	mkdirSync(join(devNm, "existing-pkg"), { recursive: true });
+	const roll6 = restoreSnapshot(snap6);
+	check(!existsSync(join(devNm, "@deepseek-ai", "dsh-tools")), "rollback removes the added link junction");
+	check(existsSync(join(devNm, "existing-pkg")), "rollback keeps pre-existing link-target entries");
+
+	/* ---- scenario 7: watchdog-managed dynamic keepalive fields are not
+	 * repair drift; a changed static field still is ---- */
+	const kstate = { enabled: true, version: 1, watchdogPid: 1, status: "watching", updatedAt: 1, lastError: null, webPid: 1, lastRestoredAt: "a", repairCount: 0, autoRepair: true, repairProvider: "bendi", repairModel: "m", checkIntervalMs: 5000, bootWaitMs: 25000, dshBin: "bin" };
+	writeFileSync(join(HOME, "keepalive.json"), JSON.stringify(kstate));
+	const snap7 = takeSnapshot(HOME, "t7");
+	writeFileSync(join(HOME, "keepalive.json"), JSON.stringify({ ...kstate, status: "failed", updatedAt: 999, webPid: 2, lastError: "changed", lastRestoredAt: "b", repairCount: 1, watchdogPid: 2 }));
+	const d7 = diffSnapshot(snap7);
+	check(!d7.outsideDrift.includes("keepalive.json"), "watchdog-managed dynamic keepalive fields are not repair drift");
+	writeFileSync(join(HOME, "keepalive.json"), JSON.stringify({ ...kstate, enabled: false }));
+	const d7b = diffSnapshot(snap7);
+	check(d7b.outsideDrift.includes("keepalive.json"), "a changed keepalive static field is still drift");
 } finally {
 	rmSync(base, { recursive: true, force: true });
 }

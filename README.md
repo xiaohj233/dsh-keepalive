@@ -19,6 +19,7 @@ A Web process that exits cannot restart itself. DSH provides stream idle watchdo
 - Applies guarded compatibility patches for the settings namespace and hidden Windows child processes.
 - Optionally runs a repair agent after repeated boot failures.
 - Snapshots the allowed repair workspace, validates resulting paths/configuration/syntax, and rolls back failed repairs.
+- Repair scope extension: for dev checkouts referenced by `link:`/`file:` (directory) dependencies in the web profile, the repair agent may add junctions under their `node_modules` to resolve dependencies; added junctions are snapshot-tracked and removed on failed-rollback, while existing entries and source/config are never touched.
 
 Both `enabled` and `autoRepair` require explicit opt-in; automatic repair defaults to **false**.
 
@@ -87,7 +88,7 @@ Additional known limitations:
 - Watchdog supervision and uninstall identify the watchdog only by recorded PID. If that PID was reused by an unrelated process after the watchdog died, supervision stops silently and `dsh-keepalive-uninstall` can terminate the unrelated process. Check for a running watchdog before uninstalling.
 - After repeated missed polls, the watchdog force-terminates whatever process listens on the configured port (the intended relaunch target). An unrelated service holding that port is killed too.
 - Failed-launch diagnostics and the last repair-agent output (up to 4 KB) are persisted in keepalive state and can be read from `/api/keepalive/status` by a same-origin or trusted page. Failed-launch logs may embed secrets from the environment.
-- The snapshot/diff/rollback layer walks regular files and directories; a junction or symlink placed inside the plugin workspace by a compromised repair agent can redirect writes outside the snapshot scope without being detected.
+- The snapshot/diff/rollback layer tracks the top-level entries of link-target `node_modules`: junctions the repair agent adds there are detected and removed on rollback; plain plugin workspaces are still walked as regular files and directories, so keep them link-free.
 - Host and watchdog both rewrite `keepalive.json`; a concurrent write can transiently lose one update (self-corrects on the next write).
 
 ## Tests
