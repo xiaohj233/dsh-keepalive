@@ -679,6 +679,7 @@ window.__ModuleLoader__.load({
 			var controller = new KeepaliveCardController(ctx.settingsScope.bind({ namespace: "keepalive" }));
 			ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
 				name: "settings.plugin.item",
+				key: "keepalive",
 				id: "keepalive",
 				order: 30,
 				inject: () => controller.inject()
